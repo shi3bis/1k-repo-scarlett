@@ -6,13 +6,46 @@ Reference: https://github.com/wensi-ai/openpi/blob/behavior/src/openpi/policies/
 """
 
 import dataclasses
+from collections import OrderedDict
 
 import einops
 import numpy as np
 
 from openpi import transforms
 from openpi.models import model as _model
-from omnigibson.learning.utils.eval_utils import PROPRIOCEPTION_INDICES
+
+# Copied from omnigibson.eval.utils.eval_utils.PROPRIOCEPTION_INDICES["R1Pro"]
+# (BEHAVIOR-1K/OmniGibson/omnigibson/eval/utils/eval_utils.py, 2026 codebase,
+# verified 2026-09-06) instead of importing it. `import omnigibson` pulls in
+# omnigibson.envs -> ... -> a native (USD/Isaac-Sim-adjacent) extension that
+# segfaults on import in this environment with no Python-level traceback --
+# bisected down to omnigibson.envs.data_wrapper/env_base but not further
+# (no gdb/strace available here). Training is pure JAX over pre-recorded
+# LeRobot data and never touches the simulator, so pulling in that entire
+# chain for a 15-line index dict isn't worth the crash risk. If this drifts
+# from upstream, training will silently use stale indices -- re-diff against
+# the source above if state-dependent behavior looks wrong.
+PROPRIOCEPTION_INDICES = {
+    "R1Pro": OrderedDict(
+        {
+            "base_qvel": np.s_[0:3],
+            "arm_left_qpos": np.s_[3:10],
+            "arm_left_qvel": np.s_[10:17],
+            "eef_left_pos": np.s_[17:20],
+            "eef_left_quat": np.s_[20:24],
+            "gripper_left_qpos": np.s_[24:26],
+            "gripper_left_qvel": np.s_[26:28],
+            "arm_right_qpos": np.s_[28:35],
+            "arm_right_qvel": np.s_[35:42],
+            "eef_right_pos": np.s_[42:45],
+            "eef_right_quat": np.s_[45:49],
+            "gripper_right_qpos": np.s_[49:51],
+            "gripper_right_qvel": np.s_[51:53],
+            "trunk_qpos": np.s_[53:57],
+            "trunk_qvel": np.s_[57:61],
+        }
+    ),
+}
 
 
 def make_b1k_example() -> dict:

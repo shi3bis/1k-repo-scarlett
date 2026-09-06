@@ -236,6 +236,121 @@ class LeRobotB1KDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotB1K2026DataConfig(LeRobotB1KDataConfig):
+    """Data configuration for the behavior-1k/2026-challenge-demos dataset.
+
+    This is a schema adapter, not a new model/training path: the 2026 LeRobot v3
+    dataset uses different raw column names than the 2025 IliaLarchenko/behavior_224_rgb
+    dataset the rest of this pipeline (b1k_policy.B1kInputs/Outputs, delta-action
+    masks, model_transforms, FAST tokenization) was built around. This class only
+    changes the repack_mapping so the 2026 columns land under the exact same
+    target names LeRobotB1KDataConfig already produces.
+
+    Verified against meta/info.json for behavior-1k/2026-challenge-demos:
+    - Camera link -> role mapping confirmed from docs/challenge/evaluation.md and
+      OmniGibson/scripts/learning/benchmark.py's CAMERA_PREFIXES (robot_r1):
+        zed_link_camera_0            -> head (egocentric)
+        left_realsense_link_camera_0  -> left wrist
+        right_realsense_link_camera_0 -> right wrist
+    - `action` is float32[23], matching the existing delta_action_mask
+      (make_bool_mask(-3, 3, -1, 7, -1, 7, -1) sums to 23) unchanged below --
+      same robot_r1 action layout as 2025, only the column name differs
+      ("action" here vs "actions" in the 2025 dataset).
+    - `observation.state` is float32[61] for 2026, vs float32[256] for the 2025
+      IliaLarchenko/behavior_224_rgb dataset -- these are NOT the same vector
+      truncated/reordered, they're two different PROPRIOCEPTION_INDICES["R1Pro"]
+      layouts (confirmed by diffing omnigibson.eval.utils.eval_utils, the
+      installed 2026 package, against the 2025-era omnigibson.learning.utils.eval_utils
+      that used to back this, since removed/renamed upstream). B1kInputs.
+      extract_state_from_proprio() in b1k_policy.py reads named slices out of
+      PROPRIOCEPTION_INDICES rather than raw offsets, and every field it needs
+      (base_qvel, trunk_qpos, arm_left_qpos, gripper_left_qpos, arm_right_qpos,
+      gripper_right_qpos) exists in the 2026 61-dim map too, so no code change
+      was needed there once the import below pointed at the right module --
+      but this ONLY works for 2026 data. Do not reuse this data_transforms
+      pipeline for actual 2025-schema (256-dim state) training in this same
+      environment; the 256-dim index map is no longer importable here at all.
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack transforms for the 2026 LeRobot v3 schema -> the same target
+        # names LeRobotB1KDataConfig uses for the 2025 schema. RepackTransform
+        # (openpi/transforms.py) takes {new_key: old_key} -- keys are the
+        # target names B1kInputs.__call__ actually reads (observation/state,
+        # observation/egocentric_camera, ..., actions -- slash-style, see
+        # b1k/policies/b1k_policy.py), values are the raw 2026 column names.
+        # A previous pass had this backwards (raw names as keys, and target
+        # names copied from openpi's generic dot-style convention rather than
+        # B1kInputs' actual slash-style keys) -- caught by KeyError during the
+        # first real smoke-test data load, never having been run end-to-end
+        # before (see b1k/training/config.py's LeRobotB1K2026DataConfig
+        # docstring history / project memory).
+        repack_mapping = {
+            "observation/egocentric_camera": "observation.rgb.zed_link_camera_0",
+            "observation/wrist_image_left": "observation.rgb.left_realsense_link_camera_0",
+            "observation/wrist_image_right": "observation.rgb.right_realsense_link_camera_0",
+            "observation/state": "observation.state",
+            "actions": "action",
+            "task_index": "task_index",  # Always preserve task_index
+            "timestamp": "timestamp",    # Preserve timestamp for subtask state computation
+            "episode_index": "episode_index",  # Preserve episode_index for episode length lookup
+            "index": "index",           # Preserve index
+        }
+
+        repack_transform = _transforms.Group(
+            inputs=[_transforms.RepackTransform(repack_mapping)]
+        )
+
+        # Everything below is unchanged from LeRobotB1KDataConfig.create() --
+        # it operates on the common post-repack schema, not the raw source names.
+        data_transforms = _transforms.Group(
+            inputs=[b1k_policy.B1kInputs(model_type=model_config.model_type)],
+            outputs=[b1k_policy.B1kOutputs()],
+        )
+
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(-3, 3, -1, 7, -1, 7, -1)
+        else:
+            delta_action_mask = _transforms.make_bool_mask(-23)
+
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        if self.use_fast_tokenization and hasattr(model_config, 'use_fast_auxiliary') and model_config.use_fast_auxiliary:
+            asset_id = self.assets.asset_id or self.repo_id
+            tokenizer_path = assets_dirs / asset_id / "fast_tokenizer"
+            base_config = self.create_base_config(assets_dirs, model_config)
+            if tokenizer_path.exists():
+                model_transforms = model_transforms.push(
+                    inputs=[b1k_transforms.TokenizeFASTActions(
+                        tokenizer_path=str(tokenizer_path),
+                        encoded_dim_ranges=model_config.get_fast_dim_ranges(),
+                        max_fast_tokens=model_config.max_fast_tokens,
+                        norm_stats=base_config.norm_stats,
+                        use_per_timestamp=base_config.use_per_timestamp_norm,
+                    )],
+                )
+            else:
+                logging.warning(
+                    f"FAST tokenizer not found at {tokenizer_path}. "
+                    "FAST auxiliary training will be disabled (inference mode)."
+                )
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
@@ -377,6 +492,50 @@ _CONFIGS = [
         keep_period=2000,
     ),
 ]
+
+# Variant of pi_behavior_b1k_fast with a 100-task embedding table, for fine-tuning
+# on top of the extended behavior_50t_checkpoint (tasks 55/76/82 appended to the
+# original 50-task checkpoint -- see pi_behavior_config.py's TASK_NUM_STAGES
+# comment). Added as a separate named config rather than changing
+# pi_behavior_b1k_fast in place, since that config's num_tasks=50 architecture
+# must stay unchanged to match the existing 50-task specialist checkpoints
+# (behavior_submission / task_checkpoint_mapping.json).
+_CONFIGS.append(
+    dataclasses.replace(
+        _CONFIGS[0],
+        name="pi_behavior_b1k_fast_100task",
+        model=dataclasses.replace(_CONFIGS[0].model, num_tasks=100),
+        # Tasks 55/76/82 only exist in the 2026 dataset, and task 1's demos are
+        # also present there (chunk-001), so use 2026 data for all trained tasks
+        # rather than mixing two dataset repos in one run.
+        data=LeRobotB1K2026DataConfig(
+            repo_id="behavior-1k/2026-challenge-demos",
+            base_config=DataConfig(
+                prompt_from_task=False,
+                behavior_dataset_root="~/data/2026-challenge-demos",  # populate per task before training
+                use_per_timestamp_norm=True,
+                # TEMPORARY: restricted to the 36 downloaded task-1
+                # (picking_up_trash, episodes 200-399 in the full dataset)
+                # episodes for bring-up/smoke testing. Expand to include
+                # 55/76/82's episode ranges once their data is downloaded too
+                # -- this must cover all 4 selected tasks before real joint
+                # training starts, not just task 1.
+                episodes_index=list(range(200, 236)),
+            ),
+            use_delta_joint_actions=True,
+            use_fast_tokenization=True,
+        ),
+        # _CONFIGS[0] (pi_behavior_b1k_fast) inherits a weight_loader pointing
+        # at vanilla gs://openpi-assets/checkpoints/pi05_base/params -- wrong
+        # for this config, which must continue from the locally extended
+        # 100-task checkpoint (behavior_50t_checkpoint with task_embeddings
+        # grown 50->100 and task_stage_embeddings grown 596->627; see
+        # TASK_NUM_STAGES above), not from pi05_base and not from scratch.
+        weight_loader=weight_loaders.PiBehaviorWeightLoader(
+            "/workspace/persistent/behavior/checkpoints/behavior_50t_checkpoint_ext100/params"
+        ),
+    )
+)
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

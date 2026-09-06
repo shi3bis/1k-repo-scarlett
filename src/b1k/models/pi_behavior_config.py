@@ -26,16 +26,37 @@ if TYPE_CHECKING:
 
 # Per-task stage counts (based on avg_episode_length / 900, capped between 5-15)
 # Use tuple for immutability and to avoid JAX device allocation at import time
+#
+# Tasks 50-99 are 2026-challenge-only task indices, added to extend the original
+# 2025 50-task (0-49) checkpoint. Entries are 0 ("no stage embeddings reserved")
+# for every 2026 task EXCEPT 55, 76, 82, which are the only ones actually
+# appended to task_stage_embeddings so far (validated against full 200-episode
+# demo sets: mean_length/900 clamped to [5,15] -> 11, 11, 9 respectively).
+#
+# IMPORTANT: these must stay 0 for any task not physically present in the
+# checkpoint's task_stage_embeddings table. TASK_STAGE_OFFSETS[k] is a
+# cumulative sum over TASK_NUM_STAGES[:k] (see below and pi_behavior.py's
+# fuse_task_and_subtask), so a nonzero placeholder for an unused task index
+# would shift every later task's offset and silently misalign it with the
+# wrong physical rows in the checkpoint. Do not fill these with guessed or
+# "plausible" values -- compute the real value from full episode data first,
+# then both re-append the corresponding rows to the checkpoint AND update the
+# entry here together, in the same order they were appended.
 TASK_NUM_STAGES = (
     5, 6, 15, 15, 14, 12, 9, 15, 10, 15,  # Tasks 0-9
     7, 13, 10, 15, 15, 15, 15, 11, 13, 12,  # Tasks 10-19
     14, 15, 9, 15, 15, 15, 15, 15, 15, 15,  # Tasks 20-29
     11, 10, 10, 13, 5, 5, 14, 6, 8, 10,  # Tasks 30-39
     5, 15, 8, 15, 12, 11, 9, 14, 15, 15,  # Tasks 40-49
+    0, 0, 0, 0, 0, 11, 0, 0, 0, 0,  # Tasks 50-59 (55=11)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # Tasks 60-69
+    0, 0, 0, 0, 0, 0, 11, 0, 0, 0,  # Tasks 70-79 (76=11)
+    0, 0, 9, 0, 0, 0, 0, 0, 0, 0,  # Tasks 80-89 (82=9)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # Tasks 90-99
 )
 
 MAX_NUM_STAGES = 15  # Maximum stages per task
-TOTAL_TASK_STAGE_EMBEDDINGS = sum(TASK_NUM_STAGES)  # 596 total embeddings
+TOTAL_TASK_STAGE_EMBEDDINGS = sum(TASK_NUM_STAGES)  # now 627 total embeddings (596 + 11 + 11 + 9)
 
 # Cumulative offsets for indexing into task_stage_embeddings (as tuple)
 TASK_STAGE_OFFSETS = tuple([0] + [sum(TASK_NUM_STAGES[:i+1]) for i in range(len(TASK_NUM_STAGES) - 1)])

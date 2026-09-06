@@ -48,89 +48,44 @@ class DataLoaderImpl(DataLoader):
 
 def create_behavior_dataset(data_config: _config.DataConfig, action_horizon: int, seed: int | None = None) -> Dataset:
     """Create a BEHAVIOR-1K dataset for training.
-    
-    Uses OmniGibson's BehaviorLeRobotDataset for efficient loading of BEHAVIOR-1K data.
-    
-    Args:
-        data_config: Data configuration
-        action_horizon: Action horizon for delta timestamps
-        seed: Random seed for shuffling. If None, uses random seed based on current time.
-    
-    Returns:
-        Dataset instance with BEHAVIOR-1K data
+
+    Uses the stock lerobot.datasets.lerobot_dataset.LeRobotDataset, not
+    omnigibson.learning.datas.lerobot_dataset.BehaviorLeRobotDataset -- the
+    latter no longer exists in the installed 2026 omnigibson package (that
+    package renamed/restructured `omnigibson.learning` -> `omnigibson.eval`
+    and dropped this class; see the PROPRIOCEPTION_INDICES comment in
+    b1k_policy.py for the same root cause, and note importing the full
+    `omnigibson` package also segfaults in this environment regardless, in
+    unrelated native code -- unnecessary anyway since training never touches
+    the simulator). Task filtering is done via data_config.episodes_index
+    (an explicit episode index list) instead of the old task-name list,
+    since this dataset class has no notion of BEHAVIOR-1K task names.
+
+    video_backend is forced to "pyav": torchcodec is importable here but its
+    native library fails to load (ffmpeg .so version mismatch in this
+    environment -- lerobot's backend auto-detection only checks whether the
+    torchcodec package is findable, not whether it actually loads, so it
+    picks torchcodec and crashes at decode time unless overridden).
     """
-    from omnigibson.learning.datas.lerobot_dataset import BehaviorLeRobotDataset
-    
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
     # Use random seed if not provided
     if seed is None:
         seed = int(time.time() * 1000) % (2**32)
-        logging.info(f"Using random seed for BehaviorLeRobotDataset: {seed}")
-    tasks = [
-    "picking_up_trash", # difficulty: 2
-    "putting_away_Halloween_decorations", # difficulty: 3
-    "cleaning_up_plates_and_food", # difficulty: 3.5
-    "setting_mousetraps", # difficulty: 2
-    "hiding_Easter_eggs", # difficulty: 2
-    "set_up_a_coffee_station_in_your_kitchen", # difficulty: 3
-    "putting_dishes_away_after_cleaning", # difficulty: 3
-    "preparing_lunch_box", # difficulty: 3
-    "loading_the_car", # difficulty: 3.5
-    "carrying_in_groceries", # difficulty: 3.5
-    "turning_on_radio", # difficulty: 1
-    "picking_up_toys", # difficulty: 3.5
-    "can_meat", # difficulty: 3.5
-    "rearranging_kitchen_furniture", # difficulty: 3
-    "putting_up_Christmas_decorations_inside", # difficulty: 2
-    "bringing_in_wood", # difficulty: 1.5
-    "moving_boxes_to_storage", # difficulty: 1.5
-    "bringing_water", # difficulty: 1.5
-    "tidying_bedroom", # difficulty: 2
-    "outfit_a_basic_toolbox", # difficulty: 2,
-    "sorting_vegetables",
-    "collecting_childrens_toys",
-    "putting_shoes_on_rack",
-    "boxing_books_up_for_storage",
-    "storing_food",
-    "clearing_food_from_table_into_fridge",
-    "assembling_gift_baskets",
-    "sorting_household_items",
-    "getting_organized_for_work",
-    "clean_up_your_desk",
-    "setting_the_fire",
-    "clean_boxing_gloves",
-    "wash_a_baseball_cap",
-    "wash_dog_toys",
-    "hanging_pictures",
-    "attach_a_camera_to_a_tripod",
-    "clean_a_patio",
-    "clean_a_trumpet",
-    "spraying_for_bugs",
-    "spraying_fruit_trees",
-    "make_microwave_popcorn",
-    "cook_cabbage",
-    "make_pizza",
-    "chop_an_onion",
-    "slicing_vegetables",
-    "chopping_wood",
-    "canning_food",
-    "cook_hot_dogs",
-    "cook_bacon",
-    "freeze_pies",
-    ]
-    
-    dataset = BehaviorLeRobotDataset(
-        repo_id=data_config.repo_id,
+        logging.info(f"Using random seed for LeRobotDataset: {seed}")
+
+    dataset = LeRobotDataset(
+        data_config.repo_id,
         root=data_config.behavior_dataset_root,
-        tasks=tasks,
-        modalities=["rgb"],
-        local_only=True,
         delta_timestamps={
             key: [t / 30.0 for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
         episodes=data_config.episodes_index,
-        chunk_streaming_using_keyframe=False,
-        shuffle=True,
-        seed=seed,
+        video_backend="pyav",
+        # See openpi.training.data_loader.create_torch_dataset's identical
+        # override: default 1e-4s tolerance is tighter than float32
+        # timestamp rounding at these magnitudes.
+        tolerance_s=1 / 60,
     )
 
     if data_config.prompt_from_task:

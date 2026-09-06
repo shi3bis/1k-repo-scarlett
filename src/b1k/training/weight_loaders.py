@@ -8,6 +8,7 @@ import logging
 import re
 
 import flax.traverse_util
+import jax
 import numpy as np
 import orbax.checkpoint as ocp
 
@@ -41,8 +42,30 @@ class PiBehaviorWeightLoader(WeightLoader):
         params_path = download.maybe_download(self.params_path)
         
         # Load directly with PyTreeCheckpointer (handles both old and new checkpoint formats)
+        # No restore target is passed: on disk every leaf is nnx.State-shaped
+        # ({"value": array}, one level deeper than a bare flax params dict),
+        # nested under "params" -- trying to hand orbax a same-shaped item
+        # built from `params` (already flattened/unwrapped) never matches,
+        # since reproducing the exact on-disk nesting by hand is fragile and
+        # this loader has to work for both Pi05 and PI_BEHAVIOR checkpoints.
+        # Instead we let orbax infer structure from its own on-disk metadata,
+        # and override ONLY the sharding on every leaf: without that
+        # override, orbax defaults to whatever device the checkpoint was
+        # *saved* on, and this checkpoint's embedding-table extension was
+        # done as plain array surgery on CPU (no GPU needed for that), so its
+        # saved sharding references a "cpu:0" device that plain
+        # jax.local_devices() (GPU-only view, in this process) doesn't
+        # enumerate -- restore fails with "Device cpu:0 was not found in
+        # jax.local_devices()" otherwise.
+        single_device_sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
         with ocp.PyTreeCheckpointer() as ckptr:
-            restored = ckptr.restore(params_path)
+            metadata = ckptr.metadata(params_path)
+            restore_args = jax.tree_util.tree_map(
+                lambda m: ocp.ArrayRestoreArgs(sharding=single_device_sharding, dtype=m.dtype),
+                metadata,
+                is_leaf=lambda m: isinstance(m, ocp.metadata.ArrayMetadata),
+            )
+            restored = ckptr.restore(params_path, restore_args=restore_args)
         
         # Handle nested 'params' key (from some checkpoint formats)
         if isinstance(restored, dict) and "params" in restored:

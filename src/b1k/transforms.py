@@ -135,8 +135,10 @@ class ComputeSubtaskStateFromMeta(DataTransformFn):
         timestamp = float(data["timestamp"])
         task_index = int(data["task_index"])
         
-        # Validate task_index
-        if not (0 <= task_index < 50):
+        # Validate task_index. A task is only usable if it has stage embeddings
+        # actually reserved in the checkpoint (TASK_NUM_STAGES[task_index] > 0) --
+        # see the comment above TASK_NUM_STAGES in pi_behavior_config.py.
+        if not (0 <= task_index < len(TASK_NUM_STAGES)) or TASK_NUM_STAGES[task_index] == 0:
             logging.warning(f"Invalid task_index {task_index}, using stage 0")
             data["subtask_state"] = np.array(0, dtype=np.int32)
             return data
@@ -151,13 +153,31 @@ class ComputeSubtaskStateFromMeta(DataTransformFn):
             return data
             
         meta_episodes = self.dataset.meta.episodes
-        
-        if episode_index not in meta_episodes:
-            logging.warning(f"Episode {episode_index} not found in metadata, using stage 0")
+
+        # meta_episodes is a HF datasets.Dataset (Arrow-backed table), not a
+        # plain dict -- this code was written against an older lerobot
+        # version where dataset.meta.episodes really was {episode_index:
+        # {...}}. `x in a_hf_dataset` checks COLUMN NAMES, not row content,
+        # so `episode_index not in meta_episodes` was always True regardless
+        # of whether the episode actually existed (every single lookup was
+        # silently falling back to stage 0). The table is one row per
+        # episode in episode_index order (verified: row N has episode_index
+        # == N, both at N=0 and N=200), so positional indexing already finds
+        # the right row -- just bounds-check it and confirm the row actually
+        # is the episode we asked for before trusting it.
+        if not (0 <= episode_index < len(meta_episodes)):
+            logging.warning(f"Episode {episode_index} out of range in metadata, using stage 0")
             data["subtask_state"] = np.array(0, dtype=np.int32)
             return data
-            
+
         episode_info = meta_episodes[episode_index]
+        if episode_info.get("episode_index") != episode_index:
+            logging.warning(
+                f"Episode {episode_index} metadata row mismatch "
+                f"(got episode_index={episode_info.get('episode_index')}), using stage 0"
+            )
+            data["subtask_state"] = np.array(0, dtype=np.int32)
+            return data
         
         # Try 'length' first (standard key), then 'episode_length' (alternative)
         episode_length = episode_info.get('length', episode_info.get('episode_length', None))
