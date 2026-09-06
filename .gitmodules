@@ -1,7 +1,7 @@
 [submodule "openpi"]
 	path = openpi
-	url = https://github.com/wensi-ai/openpi.git
-	branch = behavior
+	url = https://github.com/shi3bis/openpi.git
+	branch = main
 [submodule "BEHAVIOR-1K"]
 	path = BEHAVIOR-1K
 	url = https://github.com/StanfordVL/BEHAVIOR-1K.git
