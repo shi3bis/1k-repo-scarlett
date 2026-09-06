@@ -402,6 +402,13 @@ class TrainConfig:
     overwrite: bool = False
     # If true, will resume training from the last checkpoint.
     resume: bool = False
+    # If false, skip saving the full train_state item (optimizer momentum +
+    # variance, roughly 2x model size for Adam) alongside the much smaller
+    # "params" item -- only needed to exactly resume=True THIS run later. A
+    # sequential curriculum that hands weights to the next task via
+    # weight_loader (not resume=True) never needs it, and saving it anyway
+    # can run the disk out of space.
+    save_train_state: bool = True
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
@@ -512,7 +519,19 @@ _CONFIGS.append(
             repo_id="behavior-1k/2026-challenge-demos",
             base_config=DataConfig(
                 prompt_from_task=False,
-                behavior_dataset_root="~/data/2026-challenge-demos",  # populate per task before training
+                # Must be an absolute path, not "~/..." -- lerobot's
+                # LeRobotDataset/LeRobotDatasetMetadata never call
+                # expanduser() on `root`, so a literal "~" is treated as a
+                # normal path segment relative to cwd. That silently created
+                # and auto-populated a real directory named "~" inside this
+                # repo (behavior-1k-solution/~/data/2026-challenge-demos) on
+                # first use, completely separate from wherever a caller
+                # thinks it downloaded data to -- worked by accident for
+                # whichever chunk got auto-fetched there first, then failed
+                # with "Instruction 'train' corresponds to no data!" for a
+                # second task's episode range once that chunk wasn't the one
+                # auto-fetched into the "~" directory.
+                behavior_dataset_root="/home/kasm-user/data/2026-challenge-demos",
                 use_per_timestamp_norm=True,
                 # TEMPORARY: restricted to the 36 downloaded task-1
                 # (picking_up_trash, episodes 200-399 in the full dataset)
