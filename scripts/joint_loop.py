@@ -40,7 +40,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 DATA_ROOT = Path("/home/kasm-user/data/2026-challenge-demos")
 REPO_ID = "behavior-1k/2026-challenge-demos"
 HF_PROGRESS_REPO = "shi2bis/place_inside_4_tasks"
-NUM_STEPS = 1000
+NUM_STEPS = 700
 
 TASKS = [
     dict(task_index=1, name="picking_up_trash", chunk="001", ep_start=200, ep_end=400),
@@ -104,6 +104,7 @@ def train_task(task: dict, weight_loader_params_path: str) -> str:
             "--ep-end", str(task["ep_end"]),
             "--weight-loader-params-path", weight_loader_params_path,
             "--exp-name", exp_name,
+            "--num-steps", str(NUM_STEPS),
         ],
         cwd=str(REPO_ROOT),
         capture_output=True,

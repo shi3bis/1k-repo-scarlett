@@ -26,16 +26,18 @@ NUM_WORKERS = 32
 CHECKPOINT_BASE = REPO_ROOT / "outputs/checkpoints/pi_behavior_b1k_fast_100task"
 
 
-def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str):
+def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str | None = None, save_interval: int = 100000, keep_period: int | None = None):
     cfg = _config.get_config("pi_behavior_b1k_fast_100task")
     cfg = dataclasses.replace(
         cfg,
         exp_name=exp_name,
-        num_train_steps=NUM_STEPS,
+        num_train_steps=num_steps,
+        **({"assets_base_dir": assets_base_dir} if assets_base_dir is not None else {}),
+        **({"keep_period": keep_period} if keep_period is not None else {}),
         batch_size=BATCH_SIZE,
         num_workers=NUM_WORKERS,
         log_interval=10,
-        save_interval=100000,
+        save_interval=save_interval,
         wandb_enabled=False,
         overwrite=True,
         seed=0,
@@ -52,7 +54,7 @@ def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path:
     )
     _train.main(cfg)
 
-    final_step = NUM_STEPS - 1
+    final_step = num_steps - 1
     params_path = f"{CHECKPOINT_BASE}/{exp_name}/{final_step}/params"
     print(f"FINAL_CHECKPOINT_PATH:{params_path}")
 
@@ -66,5 +68,9 @@ if __name__ == "__main__":
     p.add_argument("--ep-end", type=int, required=True)
     p.add_argument("--weight-loader-params-path", type=str, required=True)
     p.add_argument("--exp-name", type=str, required=True)
+    p.add_argument("--num-steps", type=int, default=NUM_STEPS)
+    p.add_argument("--assets-base-dir", type=str, default=None)
+    p.add_argument("--save-interval", type=int, default=100000)
+    p.add_argument("--keep-period", type=int, default=None)
     args = p.parse_args()
-    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name)
+    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.save_interval, args.keep_period)
