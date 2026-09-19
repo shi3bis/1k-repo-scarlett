@@ -48,6 +48,34 @@ PROPRIOCEPTION_INDICES = {
 }
 
 
+# The pinned (2025-era) omnigibson.learning eval client sends the 256-dim proprio layout
+# (copied from BEHAVIOR-1K/OmniGibson/omnigibson/learning/utils/eval_utils.py, only the
+# fields extract_state_from_proprio needs). The 2026 training data uses the 61-dim layout
+# above, so applying the 61-dim offsets to a 256-dim eval observation reads unrelated
+# entries (wrong joints, etc.) and feeds garbage state to the model.
+PROPRIOCEPTION_INDICES_256 = {
+    "R1Pro": OrderedDict(
+        {
+            "arm_left_qpos": np.s_[158:165],
+            "gripper_left_qpos": np.s_[193:195],
+            "arm_right_qpos": np.s_[197:204],
+            "gripper_right_qpos": np.s_[232:234],
+            "trunk_qpos": np.s_[236:240],
+            "base_qvel": np.s_[253:256],
+        }
+    ),
+}
+
+
+def _proprio_indices(proprio_data):
+    dim = np.shape(proprio_data)[-1]
+    if dim == 61:
+        return PROPRIOCEPTION_INDICES["R1Pro"]
+    if dim == 256:
+        return PROPRIOCEPTION_INDICES_256["R1Pro"]
+    raise ValueError(f"Unsupported proprio dimension {dim}; expected 61 (2026 layout) or 256 (eval client layout)")
+
+
 def make_b1k_example() -> dict:
     """Creates a random input example for the Droid policy."""
     return {
@@ -62,15 +90,16 @@ def extract_state_from_proprio(proprio_data):
     """
     We assume perfect correlation for the two gripper fingers.
     """
+    idx = _proprio_indices(proprio_data)
     # extract joint position
-    base_qvel = proprio_data[..., PROPRIOCEPTION_INDICES["R1Pro"]["base_qvel"]]  # 3
-    trunk_qpos = proprio_data[..., PROPRIOCEPTION_INDICES["R1Pro"]["trunk_qpos"]]  # 4
-    arm_left_qpos = proprio_data[..., PROPRIOCEPTION_INDICES["R1Pro"]["arm_left_qpos"]]  #  7
-    arm_right_qpos = proprio_data[..., PROPRIOCEPTION_INDICES["R1Pro"]["arm_right_qpos"]]  #  7
+    base_qvel = proprio_data[..., idx["base_qvel"]]  # 3
+    trunk_qpos = proprio_data[..., idx["trunk_qpos"]]  # 4
+    arm_left_qpos = proprio_data[..., idx["arm_left_qpos"]]  #  7
+    arm_right_qpos = proprio_data[..., idx["arm_right_qpos"]]  #  7
     
     # Extract raw gripper widths and normalize to [-1, 1] to match action space
-    left_gripper_raw = proprio_data[..., PROPRIOCEPTION_INDICES["R1Pro"]["gripper_left_qpos"]].sum(axis=-1, keepdims=True)
-    right_gripper_raw = proprio_data[..., PROPRIOCEPTION_INDICES["R1Pro"]["gripper_right_qpos"]].sum(axis=-1, keepdims=True)
+    left_gripper_raw = proprio_data[..., idx["gripper_left_qpos"]].sum(axis=-1, keepdims=True)
+    right_gripper_raw = proprio_data[..., idx["gripper_right_qpos"]].sum(axis=-1, keepdims=True)
     
     # Normalize gripper widths from [0, 0.1] to [-1, 1] 
     # Based on statistics: physical range is [0, 0.1], action range is [-1, 1]
