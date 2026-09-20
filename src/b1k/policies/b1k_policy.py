@@ -61,6 +61,7 @@ PROPRIOCEPTION_INDICES_256 = {
             "arm_right_qpos": np.s_[197:204],
             "gripper_right_qpos": np.s_[232:234],
             "trunk_qpos": np.s_[236:240],
+            "base_qpos": np.s_[244:247],
             "base_qvel": np.s_[253:256],
         }
     ),
@@ -93,6 +94,13 @@ def extract_state_from_proprio(proprio_data):
     idx = _proprio_indices(proprio_data)
     # extract joint position
     base_qvel = proprio_data[..., idx["base_qvel"]]  # 3
+    if "base_qpos" in idx:
+        # Eval client layout: base_qvel is the WORLD-frame velocity of the virtual x/y/yaw base joints, while the
+        # 2026 training state (61-d layout) stores it in the ROBOT frame. Rotate (vx, vy) by -yaw to match training.
+        yaw = proprio_data[..., idx["base_qpos"]][..., 2:3]
+        c, s = np.cos(yaw), np.sin(yaw)
+        vx, vy, wz = base_qvel[..., 0:1], base_qvel[..., 1:2], base_qvel[..., 2:3]
+        base_qvel = np.concatenate([c * vx + s * vy, -s * vx + c * vy, wz], axis=-1)
     trunk_qpos = proprio_data[..., idx["trunk_qpos"]]  # 4
     arm_left_qpos = proprio_data[..., idx["arm_left_qpos"]]  #  7
     arm_right_qpos = proprio_data[..., idx["arm_right_qpos"]]  #  7
