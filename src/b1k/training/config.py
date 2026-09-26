@@ -397,6 +397,9 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # Extra explicit steps to checkpoint at, in addition to save_interval
+    # (e.g. (10, 25, 100, 300) for an early-training forgetting sweep).
+    save_steps: tuple[int, ...] = ()
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False

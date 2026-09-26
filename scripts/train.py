@@ -334,7 +334,10 @@ def train_step(
     return new_state, info
 
 
-def main(config: _config.TrainConfig):
+def main(config: _config.TrainConfig, on_checkpoint_saved=None):
+    """on_checkpoint_saved: optional callable(step, step_dir) run synchronously
+    after each checkpoint is fully written (training pauses until it returns),
+    e.g. to push a checkpoint off-box and delete it before the next save."""
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 
@@ -439,11 +442,18 @@ def main(config: _config.TrainConfig):
             infos = []
         batch = next(data_iter)
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+        if (
+            (step % config.save_interval == 0 and step > start_step)
+            or step in config.save_steps
+            or step == config.num_train_steps - 1
+        ):
             _checkpoints.save_state(
                 checkpoint_manager, train_state, data_loader, step,
                 include_train_state=config.save_train_state,
             )
+            if on_checkpoint_saved is not None:
+                checkpoint_manager.wait_until_finished()
+                on_checkpoint_saved(step, epath.Path(config.checkpoint_dir) / str(step))
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
