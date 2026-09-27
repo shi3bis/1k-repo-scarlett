@@ -6,19 +6,22 @@ Per task:
      already fully present locally).
   2. Train `NUM_STEPS` steps from the previous task's saved checkpoint
      (task 1 starts from checkpoints/behavior_50t_checkpoint_ext100).
-  3. Push the resulting `params/` checkpoint (not the full train_state --
-     smaller, and it's the same format PiBehaviorWeightLoader reads) to
-     shi2bis/place_inside_4_tasks on Hugging Face.
+  3. Push the resulting `params/` + `assets/` (norm_stats.json + FAST
+     tokenizer this checkpoint was trained with -- not the full train_state)
+     to shi2bis/place_inside_4_tasks/iliastats_chain/ on Hugging Face.
   4. Verify the push landed, THEN delete that task's local dataset.
   5. Move to the next task, continuing from the checkpoint just pushed.
 
+Normalization: every task trains with Ilia's shipped norm_stats (per-timestep
+action stats) + FAST tokenizer (train_one_task.py's default assets_base_dir),
+i.e. the same normalized action space the ext100 base was trained in. The
+earlier chain (top-level task*/params on HF) used flat task-1 2026 stats and
+no FAST aux loss, and is kept there for comparison. Eval of these checkpoints
+MUST decode with their bundled assets/, not task 1's stats.
+
 Known simplifications (flagged in the final report, not silently hidden):
-  - use_correlated_noise stays disabled (same as the smoke test) --
-    action_correlation_cholesky was never computed against the 2026 schema.
-  - norm_stats reused from task 1 only, not recomputed per task or combined
-    across all 4 -- state/action ranges are robot-level (same R1Pro
-    embodiment), not task-specific, so this is an approximation, not
-    normalizing against literal zeros.
+  - use_correlated_noise stays disabled (`--corr-noise` exists in
+    train_one_task.py but this loop doesn't pass it).
   - This is sequential curriculum fine-tuning (one task's data at a time,
     per the disk-driven delete-after-use design), not batch-mixed joint
     training across all 4 tasks' data simultaneously.
@@ -40,6 +43,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 DATA_ROOT = Path("/home/kasm-user/data/2026-challenge-demos")
 REPO_ID = "behavior-1k/2026-challenge-demos"
 HF_PROGRESS_REPO = "shi2bis/place_inside_4_tasks"
+HF_PREFIX = "iliastats_chain"
 NUM_STEPS = 700
 
 TASKS = [
@@ -92,7 +96,7 @@ def train_task(task: dict, weight_loader_params_path: str) -> str:
     # succeeded standalone in a fresh interpreter -- points at in-process
     # cache/state in `datasets`/pyarrow, not an actual data problem. A fresh
     # process per task sidesteps whatever that state is.
-    exp_name = f"joint_task{task['task_index']}"
+    exp_name = f"iliachain_task{task['task_index']}"
     log.info(f"[task {task['task_index']}] training {NUM_STEPS} steps, weights from {weight_loader_params_path}")
     t0 = time.time()
     result = subprocess.run(
@@ -127,24 +131,37 @@ def train_task(task: dict, weight_loader_params_path: str) -> str:
 
 def push_checkpoint(task: dict, params_path: str) -> None:
     api = HfApi()
-    path_in_repo = f"task{task['task_index']}_{task['name']}/params"
-    log.info(f"[task {task['task_index']}] pushing {params_path} -> {HF_PROGRESS_REPO}/{path_in_repo}")
+    step_dir = Path(params_path).parent
+    path_in_repo = f"{HF_PREFIX}/task{task['task_index']}_{task['name']}"
+    log.info(f"[task {task['task_index']}] pushing {step_dir} -> {HF_PROGRESS_REPO}/{path_in_repo}")
     t0 = time.time()
     api.create_repo(HF_PROGRESS_REPO, exist_ok=True)
-    api.upload_folder(
-        repo_id=HF_PROGRESS_REPO,
-        folder_path=params_path,
-        path_in_repo=path_in_repo,
-        commit_message=f"joint checkpoint after task {task['task_index']} ({task['name']}), {NUM_STEPS} steps",
-    )
+    # Retry: a transient xet TimeoutError killed task 55's push in the
+    # previous chain even though the data had landed.
+    for attempt in range(1, 4):
+        try:
+            api.upload_folder(
+                repo_id=HF_PROGRESS_REPO,
+                folder_path=str(step_dir),
+                path_in_repo=path_in_repo,
+                allow_patterns=["params/**", "assets/**"],
+                commit_message=f"iliastats chain after task {task['task_index']} ({task['name']}), {NUM_STEPS} steps",
+            )
+            break
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"[task {task['task_index']}] push attempt {attempt}/3 failed: {e!r}")
+            if attempt == 3:
+                raise
+            time.sleep(30)
     log.info(f"[task {task['task_index']}] push done in {time.time()-t0:.0f}s")
 
-    # Verify: the pushed folder must actually contain files, not just an empty commit.
+    # Verify: params AND the norm_stats needed to decode them both landed.
     files = api.list_repo_files(HF_PROGRESS_REPO)
-    pushed_files = [f for f in files if f.startswith(path_in_repo + "/")]
-    if not pushed_files:
-        raise RuntimeError(f"[task {task['task_index']}] push verification FAILED: no files found under {path_in_repo}")
-    log.info(f"[task {task['task_index']}] push verified: {len(pushed_files)} files under {path_in_repo}")
+    pushed_params = [f for f in files if f.startswith(path_in_repo + "/params/")]
+    pushed_stats = [f for f in files if f.startswith(path_in_repo + "/assets/") and f.endswith("norm_stats.json")]
+    if not pushed_params or not pushed_stats:
+        raise RuntimeError(f"[task {task['task_index']}] push verification FAILED under {path_in_repo}: {len(pushed_params)} params files, {len(pushed_stats)} norm_stats")
+    log.info(f"[task {task['task_index']}] push verified: {len(pushed_params)} params files + norm_stats under {path_in_repo}")
 
 
 def train_task_with_retry(task: dict, weight_loader_params_path: str, attempts: int = 2) -> str:
