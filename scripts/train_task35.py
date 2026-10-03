@@ -1,5 +1,12 @@
 """Standalone task 35 (attach_a_camera_to_a_tripod) fine-tune: 3000 steps
-from Ilia's ext100 base, pushed to its own HF repo. Deliberately separate
+from Ilia's ext100 base, pushed to its own HF repo.
+
+This branch's variant: low LR that actually decays within the run (warmup
+100, peak 2e-5, cosine to 2e-6 by step 3000), pushed under lowlr_decay/.
+The first run (default schedule: warmup 1000 to 1e-4, decay over 20k steps,
+so still ~98% of peak at step 3000) degraded the base on task 35, which
+Ilia's base was already trained on: subtask acc 0.95 -> ~0.75, total loss
+0.22 -> ~0.26-0.29, rising exactly over the warmup. Deliberately separate
 from the place_inside_4_tasks pipeline (own repo, own exp name, no
 joint_loop imports); it only reuses train_one_task.py for the training step.
 
@@ -28,7 +35,10 @@ DATA_ROOT = Path("/home/kasm-user/data/2026-challenge-demos")
 DATASET_REPO = "behavior-1k/2026-challenge-demos"
 HF_REPO = "shi2bis/task35_attach_a_camera_to_a_tripod"
 INIT_CKPT = "/workspace/persistent/behavior/checkpoints/behavior_50t_checkpoint_ext100/params"
-EXP_NAME = "task35_from_base_3000"
+EXP_NAME = "task35_from_base_3000_lowlr"
+# Path inside HF_REPO; the default-schedule run lives at the repo root.
+HF_SUBDIR = "lowlr_decay"
+LR_ARGS = ["--warmup-steps", "100", "--peak-lr", "2e-5", "--decay-steps", "3000", "--decay-lr", "2e-6"]
 NUM_STEPS = 3000
 TASK_INDEX = 35
 CHUNK = "035"
@@ -76,6 +86,7 @@ def train() -> str:
             "--weight-loader-params-path", INIT_CKPT,
             "--exp-name", EXP_NAME,
             "--num-steps", str(NUM_STEPS),
+            *LR_ARGS,
         ],
         cwd=str(REPO_ROOT),
         stdout=subprocess.PIPE,
@@ -98,15 +109,16 @@ def train() -> str:
 def push(params_path: str) -> None:
     api = HfApi()
     step_dir = Path(params_path).parent
-    log.info(f"pushing {step_dir} -> {HF_REPO}")
+    log.info(f"pushing {step_dir} -> {HF_REPO}/{HF_SUBDIR}")
     t0 = time.time()
     for attempt in range(1, 4):
         try:
             api.upload_folder(
                 repo_id=HF_REPO,
                 folder_path=str(step_dir),
+                path_in_repo=HF_SUBDIR,
                 allow_patterns=["params/**", "assets/**"],
-                commit_message=f"task {TASK_INDEX} from ext100 base, {NUM_STEPS} steps",
+                commit_message=f"task {TASK_INDEX} from ext100 base, {NUM_STEPS} steps, low LR decaying",
             )
             break
         except Exception as e:  # noqa: BLE001
@@ -117,15 +129,15 @@ def push(params_path: str) -> None:
     log.info(f"push done in {time.time()-t0:.0f}s")
 
     files = api.list_repo_files(HF_REPO)
-    pushed_params = [f for f in files if f.startswith("params/")]
-    pushed_stats = [f for f in files if f.startswith("assets/") and f.endswith("norm_stats.json")]
+    pushed_params = [f for f in files if f.startswith(f"{HF_SUBDIR}/params/")]
+    pushed_stats = [f for f in files if f.startswith(f"{HF_SUBDIR}/assets/") and f.endswith("norm_stats.json")]
     if not pushed_params or not pushed_stats:
         raise RuntimeError(f"push verification FAILED: {len(pushed_params)} params files, {len(pushed_stats)} norm_stats")
     log.info(f"push verified: {len(pushed_params)} params files + norm_stats")
 
 
 def main():
-    log.info(f"=== task {TASK_INDEX} {NUM_STEPS} steps from base START ===")
+    log.info(f"=== task {TASK_INDEX} {NUM_STEPS} steps from base, low LR decaying START ===")
     download()
     params_path = train()
     push(params_path)
@@ -133,7 +145,7 @@ def main():
     shutil.rmtree(Path(params_path).parent.parent, ignore_errors=True)
     log.info(f"deleted local output checkpoint {Path(params_path).parent.parent}")
     delete_data()
-    log.info(f"=== task {TASK_INDEX} {NUM_STEPS} steps from base DONE ===")
+    log.info(f"=== task {TASK_INDEX} {NUM_STEPS} steps from base, low LR decaying DONE ===")
 
 
 if __name__ == "__main__":

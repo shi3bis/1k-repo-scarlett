@@ -20,6 +20,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import train as _train  # noqa: E402
 from b1k.training import config as _config  # noqa: E402
 from b1k.training import weight_loaders  # noqa: E402
+from openpi.training import optimizer as _optimizer  # noqa: E402
 
 NUM_STEPS = 1000
 BATCH_SIZE = 8
@@ -36,7 +37,7 @@ CHECKPOINT_BASE = REPO_ROOT / "outputs/checkpoints" / CONFIG_NAME
 ILIA_ASSETS_BASE_DIR = str(REPO_ROOT / "outputs/assets_ilia")
 
 
-def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None):
+def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None):
     cfg = _config.get_config("pi_behavior_b1k_fast_100task")
     cfg = dataclasses.replace(
         cfg,
@@ -44,6 +45,9 @@ def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path:
         num_train_steps=num_steps,
         assets_base_dir=assets_base_dir,
         **({"keep_period": keep_period} if keep_period is not None else {}),
+        # Overrides only the given CosineDecaySchedule fields; None keeps the
+        # config's schedule (warmup 1000, peak 1e-4, decay over 20k steps).
+        **({"lr_schedule": dataclasses.replace(cfg.lr_schedule, **lr_schedule)} if lr_schedule else {}),
         batch_size=BATCH_SIZE,
         num_workers=NUM_WORKERS,
         log_interval=10,
@@ -92,5 +96,10 @@ if __name__ == "__main__":
     p.add_argument("--corr-noise", action="store_true")
     p.add_argument("--save-interval", type=int, default=100000)
     p.add_argument("--keep-period", type=int, default=None)
+    p.add_argument("--warmup-steps", type=int, default=None)
+    p.add_argument("--peak-lr", type=float, default=None)
+    p.add_argument("--decay-steps", type=int, default=None)
+    p.add_argument("--decay-lr", type=float, default=None)
     args = p.parse_args()
-    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period)
+    lr_schedule = {k: v for k, v in dict(warmup_steps=args.warmup_steps, peak_lr=args.peak_lr, decay_steps=args.decay_steps, decay_lr=args.decay_lr).items() if v is not None}
+    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule)
