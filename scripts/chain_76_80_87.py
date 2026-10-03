@@ -88,7 +88,7 @@ def delete_task_data(task: dict) -> None:
     log.info(f"[task {task['task_index']}] deleted local dataset: {removed}")
 
 
-def train_task(task: dict, init_params: str, num_steps: int) -> str:
+def train_task(task: dict, init_params: str, num_steps: int, save_interval: int) -> str:
     exp_name = f"chain768087_task{task['task_index']}"
     warmup = max(1, round(WARMUP_FRAC * num_steps))
     log.info(f"[task {task['task_index']}] training {num_steps} steps (warmup {warmup}, bs {BATCH_SIZE}), weights from {init_params}")
@@ -112,6 +112,11 @@ def train_task(task: dict, init_params: str, num_steps: int) -> str:
             "--peak-lr", str(PEAK_LR),
             "--decay-steps", str(num_steps),
             "--decay-lr", str(END_LR),
+            # Params-only crash checkpoints (max_to_keep=1). keep_period past
+            # num_steps so the config's keep_period=2000 doesn't pin an extra
+            # 12GB copy on /workspace.
+            "--save-interval", str(save_interval),
+            "--keep-period", "100000",
         ],
         cwd=str(REPO_ROOT),
         env=dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false"),
@@ -163,7 +168,7 @@ def push_checkpoint(task: dict, params_path: str, num_steps: int) -> None:
     log.info(f"[task {task['task_index']}] push verified: {len(pushed_params)} params files + norm_stats under {path_in_repo}")
 
 
-def main(num_steps: int, tasks: list[int], resume_from: str | None):
+def main(num_steps: int, tasks: list[int], resume_from: str | None, save_interval: int):
     current = resume_from or INIT_CKPT
     prev_to_clean = None
     for task in TASKS:
@@ -171,7 +176,7 @@ def main(num_steps: int, tasks: list[int], resume_from: str | None):
             continue
         log.info(f"=== TASK {task['task_index']} ({task['name']}) START ===")
         download_task(task)
-        final = train_task(task, current, num_steps)
+        final = train_task(task, current, num_steps, save_interval)
         push_checkpoint(task, final, num_steps)
         delete_task_data(task)
         # Park the pushed checkpoint on the overlay disk (next task's init).
@@ -198,5 +203,6 @@ if __name__ == "__main__":
     p.add_argument("--num-steps", type=int, default=3000)
     p.add_argument("--tasks", type=int, nargs="+", default=[t["task_index"] for t in TASKS])
     p.add_argument("--resume-from", type=str, default=None)
+    p.add_argument("--save-interval", type=int, default=500)
     a = p.parse_args()
-    main(a.num_steps, a.tasks, a.resume_from)
+    main(a.num_steps, a.tasks, a.resume_from, a.save_interval)
