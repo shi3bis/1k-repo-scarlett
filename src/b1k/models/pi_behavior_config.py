@@ -29,9 +29,13 @@ if TYPE_CHECKING:
 #
 # Tasks 50-99 are 2026-challenge-only task indices, added to extend the original
 # 2025 50-task (0-49) checkpoint. Entries are 0 ("no stage embeddings reserved")
-# for every 2026 task EXCEPT 55, 76, 82, which are the only ones actually
-# appended to task_stage_embeddings so far (validated against full 200-episode
-# demo sets: mean_length/900 clamped to [5,15] -> 11, 11, 9 respectively).
+# for every 2026 task EXCEPT 55, 76, 80, 82, 87, which are the only ones
+# present in task_stage_embeddings (validated against full 200-episode demo
+# sets: ceil(mean_length/900) clamped to [5,15] -> 11, 11, 10, 9, 12).
+# 80 and 87 were INSERTED at their index-order positions by
+# scripts/extend_stage_embeddings.py (behavior_50t_checkpoint_ext100_t80t87),
+# so this table no longer matches the plain ext100 checkpoint or anything
+# trained from it (82's offset moved from 618 to 628).
 #
 # IMPORTANT: these must stay 0 for any task not physically present in the
 # checkpoint's task_stage_embeddings table. TASK_STAGE_OFFSETS[k] is a
@@ -51,12 +55,12 @@ TASK_NUM_STAGES = (
     0, 0, 0, 0, 0, 11, 0, 0, 0, 0,  # Tasks 50-59 (55=11)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # Tasks 60-69
     0, 0, 0, 0, 0, 0, 11, 0, 0, 0,  # Tasks 70-79 (76=11)
-    0, 0, 9, 0, 0, 0, 0, 0, 0, 0,  # Tasks 80-89 (82=9)
+    10, 0, 9, 0, 0, 0, 0, 12, 0, 0,  # Tasks 80-89 (80=10, 82=9, 87=12)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # Tasks 90-99
 )
 
 MAX_NUM_STAGES = 15  # Maximum stages per task
-TOTAL_TASK_STAGE_EMBEDDINGS = sum(TASK_NUM_STAGES)  # now 627 total embeddings (596 + 11 + 11 + 9)
+TOTAL_TASK_STAGE_EMBEDDINGS = sum(TASK_NUM_STAGES)  # now 649 total embeddings (596 + 11 + 11 + 10 + 9 + 12)
 
 # Cumulative offsets for indexing into task_stage_embeddings (as tuple)
 TASK_STAGE_OFFSETS = tuple([0] + [sum(TASK_NUM_STAGES[:i+1]) for i in range(len(TASK_NUM_STAGES) - 1)])

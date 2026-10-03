@@ -37,7 +37,7 @@ CHECKPOINT_BASE = REPO_ROOT / "outputs/checkpoints" / CONFIG_NAME
 ILIA_ASSETS_BASE_DIR = str(REPO_ROOT / "outputs/assets_ilia")
 
 
-def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None):
+def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS):
     cfg = _config.get_config("pi_behavior_b1k_fast_100task")
     cfg = dataclasses.replace(
         cfg,
@@ -48,8 +48,8 @@ def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path:
         # Overrides only the given CosineDecaySchedule fields; None keeps the
         # config's schedule (warmup 1000, peak 1e-4, decay over 20k steps).
         **({"lr_schedule": dataclasses.replace(cfg.lr_schedule, **lr_schedule)} if lr_schedule else {}),
-        batch_size=BATCH_SIZE,
-        num_workers=NUM_WORKERS,
+        batch_size=batch_size,
+        num_workers=num_workers,
         log_interval=10,
         save_interval=save_interval,
         wandb_enabled=False,
@@ -100,6 +100,12 @@ if __name__ == "__main__":
     p.add_argument("--peak-lr", type=float, default=None)
     p.add_argument("--decay-steps", type=int, default=None)
     p.add_argument("--decay-lr", type=float, default=None)
+    # Batch 32 / 64 workers measured 2026-10-03: 3.72 s/step = 8.6 samples/s
+    # (vs ~3-4 samples/s at 8/32, which was dataloader-starved), peak VRAM
+    # ~85GB of 98GB -- 64 won't fit. Needs XLA_PYTHON_CLIENT_PREALLOCATE=false
+    # (default preallocation caps JAX at 75% of VRAM).
+    p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    p.add_argument("--num-workers", type=int, default=NUM_WORKERS)
     args = p.parse_args()
     lr_schedule = {k: v for k, v in dict(warmup_steps=args.warmup_steps, peak_lr=args.peak_lr, decay_steps=args.decay_steps, decay_lr=args.decay_lr).items() if v is not None}
-    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule)
+    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers)
