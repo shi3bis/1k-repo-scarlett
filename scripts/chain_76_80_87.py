@@ -18,7 +18,9 @@ task's last step (the schedule that beat the 20k-step default on task 35).
 Each task restarts the schedule, since each task is a fresh train_one_task
 process (params only; optimizer state isn't carried over).
 
-Usage: python scripts/chain_76_80_87.py [--num-steps N] [--start-task T --resume-from PARAMS]
+Usage: python scripts/chain_76_80_87.py [--num-steps N] [--tasks 76 80 87] [--resume-from PARAMS]
+(e.g. --tasks 76 to stop after the first task for eval; then
+--tasks 80 87 --resume-from /home/kasm-user/chain768087_ckpts/task76/params)
 """
 import argparse
 import logging
@@ -161,11 +163,11 @@ def push_checkpoint(task: dict, params_path: str, num_steps: int) -> None:
     log.info(f"[task {task['task_index']}] push verified: {len(pushed_params)} params files + norm_stats under {path_in_repo}")
 
 
-def main(num_steps: int, start_task: int | None, resume_from: str | None):
+def main(num_steps: int, tasks: list[int], resume_from: str | None):
     current = resume_from or INIT_CKPT
     prev_to_clean = None
     for task in TASKS:
-        if start_task is not None and task["task_index"] < start_task:
+        if task["task_index"] not in tasks:
             continue
         log.info(f"=== TASK {task['task_index']} ({task['name']}) START ===")
         download_task(task)
@@ -194,7 +196,7 @@ def main(num_steps: int, start_task: int | None, resume_from: str | None):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--num-steps", type=int, default=3000)
-    p.add_argument("--start-task", type=int, default=None)
+    p.add_argument("--tasks", type=int, nargs="+", default=[t["task_index"] for t in TASKS])
     p.add_argument("--resume-from", type=str, default=None)
     a = p.parse_args()
-    main(a.num_steps, a.start_task, a.resume_from)
+    main(a.num_steps, a.tasks, a.resume_from)
