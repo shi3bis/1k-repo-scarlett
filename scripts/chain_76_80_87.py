@@ -88,10 +88,11 @@ def delete_task_data(task: dict) -> None:
     log.info(f"[task {task['task_index']}] deleted local dataset: {removed}")
 
 
-def train_task(task: dict, init_params: str, num_steps: int, save_interval: int) -> str:
-    exp_name = f"chain768087_task{task['task_index']}"
-    warmup = max(1, round(WARMUP_FRAC * num_steps))
-    log.info(f"[task {task['task_index']}] training {num_steps} steps (warmup {warmup}, bs {BATCH_SIZE}), weights from {init_params}")
+def train_task(task: dict, init_params: str, num_steps: int, save_interval: int, peak_lr: float, end_lr: float, warmup: int | None, tag: str) -> str:
+    exp_name = f"chain768087_task{task['task_index']}{tag}"
+    if warmup is None:
+        warmup = max(1, round(WARMUP_FRAC * num_steps))
+    log.info(f"[task {task['task_index']}] training {num_steps} steps (warmup {warmup}, LR {peak_lr:g} -> {end_lr:g}, bs {BATCH_SIZE}), weights from {init_params}")
     t0 = time.time()
     # Fresh subprocess per task (see train_one_task.py's docstring). Batch 32
     # needs ~85GB, above JAX's default 75% preallocation cap.
@@ -109,9 +110,9 @@ def train_task(task: dict, init_params: str, num_steps: int, save_interval: int)
             "--batch-size", str(BATCH_SIZE),
             "--num-workers", str(NUM_WORKERS),
             "--warmup-steps", str(warmup),
-            "--peak-lr", str(PEAK_LR),
+            "--peak-lr", str(peak_lr),
             "--decay-steps", str(num_steps),
-            "--decay-lr", str(END_LR),
+            "--decay-lr", str(end_lr),
             # Params-only crash checkpoints (max_to_keep=1). keep_period past
             # num_steps so the config's keep_period=2000 doesn't pin an extra
             # 12GB copy on /workspace.
@@ -137,10 +138,10 @@ def train_task(task: dict, init_params: str, num_steps: int, save_interval: int)
     return params_path
 
 
-def push_checkpoint(task: dict, params_path: str, num_steps: int) -> None:
+def push_checkpoint(task: dict, params_path: str, num_steps: int, tag: str) -> None:
     api = HfApi()
     step_dir = Path(params_path).parent
-    path_in_repo = f"task{task['task_index']}_{task['name']}"
+    path_in_repo = f"task{task['task_index']}_{task['name']}{tag}"
     log.info(f"[task {task['task_index']}] pushing {step_dir} -> {HF_REPO}/{path_in_repo}")
     t0 = time.time()
     for attempt in range(1, 4):
@@ -150,7 +151,7 @@ def push_checkpoint(task: dict, params_path: str, num_steps: int) -> None:
                 folder_path=str(step_dir),
                 path_in_repo=path_in_repo,
                 allow_patterns=["params/**", "assets/**"],
-                commit_message=f"76->80->87 chain after task {task['task_index']} ({task['name']}), {num_steps} steps",
+                commit_message=f"76->80->87 chain after task {task['task_index']} ({task['name']}), {num_steps} steps{tag}",
             )
             break
         except Exception as e:  # noqa: BLE001
@@ -168,7 +169,8 @@ def push_checkpoint(task: dict, params_path: str, num_steps: int) -> None:
     log.info(f"[task {task['task_index']}] push verified: {len(pushed_params)} params files + norm_stats under {path_in_repo}")
 
 
-def main(num_steps: int, tasks: list[int], resume_from: str | None, save_interval: int):
+def main(num_steps: int, tasks: list[int], resume_from: str | None, save_interval: int,
+         peak_lr: float, end_lr: float, warmup: int | None, tag: str):
     current = resume_from or INIT_CKPT
     prev_to_clean = None
     for task in TASKS:
@@ -176,8 +178,8 @@ def main(num_steps: int, tasks: list[int], resume_from: str | None, save_interva
             continue
         log.info(f"=== TASK {task['task_index']} ({task['name']}) START ===")
         download_task(task)
-        final = train_task(task, current, num_steps, save_interval)
-        push_checkpoint(task, final, num_steps)
+        final = train_task(task, current, num_steps, save_interval, peak_lr, end_lr, warmup, tag)
+        push_checkpoint(task, final, num_steps, tag)
         delete_task_data(task)
         # Park the pushed checkpoint on the overlay disk (next task's init).
         step_dir = Path(final).parent
@@ -204,5 +206,11 @@ if __name__ == "__main__":
     p.add_argument("--tasks", type=int, nargs="+", default=[t["task_index"] for t in TASKS])
     p.add_argument("--resume-from", type=str, default=None)
     p.add_argument("--save-interval", type=int, default=500)
+    # LR overrides, e.g. to finish a crashed run from a params-only save on
+    # the tail of its original schedule. --tag suffixes exp name + HF path.
+    p.add_argument("--peak-lr", type=float, default=PEAK_LR)
+    p.add_argument("--end-lr", type=float, default=END_LR)
+    p.add_argument("--warmup-steps", type=int, default=None)
+    p.add_argument("--tag", type=str, default="")
     a = p.parse_args()
-    main(a.num_steps, a.tasks, a.resume_from, a.save_interval)
+    main(a.num_steps, a.tasks, a.resume_from, a.save_interval, a.peak_lr, a.end_lr, a.warmup_steps, a.tag)
