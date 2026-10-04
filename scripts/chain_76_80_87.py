@@ -59,6 +59,7 @@ RGB_KEYS = [
 ]
 
 # Recipe text recorded in each READY marker, keyed by --tag.
+PARTIAL_PUSH = False  # set from --partial-push
 RECIPE = {
     "": "3000 steps from the previous chain task's final, bs 32, corr noise, Ilia stats, LR warmup 300 -> 2e-5 cosine -> 2e-6",
     "_release4x": "as chain default, but samples whose action chunk contains a gripper release (closed->open) weighted 4x in the action loss",
@@ -133,8 +134,11 @@ def train_task(task: dict, init_params: str, num_steps: int, save_interval: int,
             "--save-interval", str(save_interval),
             "--keep-period", "100000",
             "--release-weight", str(release_weight),
-            "--partial-hf-repo", HF_REPO,
-            "--partial-hf-prefix", f"partial/{hf_folder(task, tag)}",
+            # Partial pushes are off by default: on HF a deleted file keeps
+            # counting against the private quota until the history is squashed,
+            # so "keep only the latest partial" still grows storage by 12.6GB
+            # per save (this filled the quota on 2026-10-04).
+            *(["--partial-hf-repo", HF_REPO, "--partial-hf-prefix", f"partial/{hf_folder(task, tag)}"] if PARTIAL_PUSH else []),
         ],
         cwd=str(REPO_ROOT),
         env=dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false"),
@@ -246,5 +250,7 @@ if __name__ == "__main__":
     p.add_argument("--tag", type=str, default="")
     # >1: upweight samples whose action chunk contains a gripper release (train.release_mask).
     p.add_argument("--release-weight", type=float, default=1.0)
+    p.add_argument("--partial-push", action="store_true", help="push intermediate saves to partial/ on HF (uses quota)")
     a = p.parse_args()
+    PARTIAL_PUSH = a.partial_push
     main(a.num_steps, a.tasks, a.resume_from, a.save_interval, a.peak_lr, a.end_lr, a.warmup_steps, a.tag, a.release_weight)
