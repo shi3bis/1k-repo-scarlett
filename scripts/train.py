@@ -221,12 +221,26 @@ def init_train_state(
     return train_state, state_sharding
 
 
+# Release frames: a gripper (action dims 14 = left, 22 = right; absolute, not
+# delta) goes closed -> open inside the sample's action chunk. Raw commands are
+# binary -1 closed / +1 open; with Ilia's per-timestep z-score that is ~-1.5/-1.26
+# vs ~+0.67/+0.76 at every horizon step, so a step-to-step rise > 1.0 is a release.
+GRIPPER_DIMS = (14, 22)
+RELEASE_JUMP = 1.0
+
+
+def release_mask(actions: at.Array) -> at.Array:
+    g = actions[..., jnp.array(GRIPPER_DIMS)]  # [B, H, 2], normalized
+    return jnp.any(jnp.diff(g, axis=1) > RELEASE_JUMP, axis=(1, 2))  # [B]
+
+
 @at.typecheck
 def train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
     batch: tuple[Observation, _model.Actions],
+    release_weight: float = 1.0,
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -236,7 +250,16 @@ def train_step(
         model: PiBehavior, rng: at.KeyArrayLike, observation: Observation, actions: _model.Actions
     ):
         losses_dict = model.compute_detailed_loss(rng, observation, actions, train=True, num_flow_samples=config.num_flow_samples)
-        total_loss = jnp.mean(losses_dict["total_loss"])
+        if release_weight == 1.0:
+            total_loss = jnp.mean(losses_dict["total_loss"])
+        else:
+            # Weighted mean over the batch: release samples count release_weight x.
+            # Only the per-sample action loss varies across the batch (subtask and
+            # FAST enter total_loss as batch scalars), so this reweights the action loss.
+            rel = release_mask(actions)
+            w = jnp.where(rel, release_weight, 1.0)
+            total_loss = jnp.sum(w * losses_dict["total_loss"]) / jnp.sum(w)
+            losses_dict = dict(losses_dict, release_frac=jnp.mean(rel.astype(jnp.float32)), weighted_loss=total_loss)
         return total_loss, losses_dict
 
     train_rng = jax.random.fold_in(rng, state.step)
@@ -334,7 +357,7 @@ def train_step(
     return new_state, info
 
 
-def main(config: _config.TrainConfig, on_checkpoint_saved=None):
+def main(config: _config.TrainConfig, on_checkpoint_saved=None, release_weight: float = 1.0):
     """on_checkpoint_saved: optional callable(step, step_dir) run synchronously
     after each checkpoint is fully written (training pauses until it returns),
     e.g. to push a checkpoint off-box and delete it before the next save."""
@@ -410,7 +433,7 @@ def main(config: _config.TrainConfig, on_checkpoint_saved=None):
         train_state = dataclasses.replace(train_state, model_def=nnx.graphdef(model))
 
     ptrain_step = jax.jit(
-        functools.partial(train_step, config),
+        functools.partial(train_step, config, release_weight=release_weight),
         in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
@@ -435,7 +458,7 @@ def main(config: _config.TrainConfig, on_checkpoint_saved=None):
             
             # Create a concise console log with main metrics
             main_metrics = {k: v for k, v in reduced_info.items() 
-                          if "loss" in k or "accuracy" in k or k in ["grad_norm", "param_norm", "grad_norm_vlm", "grad_norm_action_expert"]}
+                          if "loss" in k or "accuracy" in k or k in ["release_frac", "grad_norm", "param_norm", "grad_norm_vlm", "grad_norm_action_expert"]}
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in main_metrics.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
