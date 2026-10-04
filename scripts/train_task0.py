@@ -9,7 +9,7 @@ norm_stats + FAST tokenizer, correlated noise on, 15 flow samples.
 
 HF layout (same convention as the chain's repo, for the eval pod):
   task0_turning_on_radio/          final params/ + assets/, READY written last
-  partial/task0_turning_on_radio/  latest intermediate save, never READY
+  (intermediate saves stay local; no partial/ pushes -- HF quota)
 
 Run from the worktree with PYTHONPATH=<worktree>/src so b1k resolves to this
 branch's code, not the editable install in the main checkout.
@@ -82,7 +82,9 @@ def train() -> str:
             "--warmup-steps", str(WARMUP), "--peak-lr", str(PEAK_LR),
             "--decay-steps", str(NUM_STEPS), "--decay-lr", str(END_LR),
             "--save-interval", str(SAVE_INTERVAL), "--keep-period", "100000",
-            "--partial-hf-repo", HF_REPO, "--partial-hf-prefix", f"partial/{HF_FOLDER}",
+            # No partial pushes: deleted HF files keep counting against the
+            # private quota until squashed (filled it on 2026-10-04). Local
+            # saves every SAVE_INTERVAL steps are still kept for crash recovery.
         ],
         cwd=str(REPO_ROOT),
         env=dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false"),
