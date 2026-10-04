@@ -23,6 +23,8 @@ Usage: python scripts/chain_76_80_87.py [--num-steps N] [--tasks 76 80 87] [--re
 --tasks 80 87 --resume-from /home/kasm-user/chain768087_ckpts/task76/params)
 """
 import argparse
+import datetime
+import json
 import logging
 import os
 import shutil
@@ -56,6 +58,12 @@ RGB_KEYS = [
     "observation.rgb.zed_link_camera_0",
 ]
 
+# Recipe text recorded in each READY marker, keyed by --tag.
+RECIPE = {
+    "": "3000 steps from the previous chain task's final, bs 32, corr noise, Ilia stats, LR warmup 300 -> 2e-5 cosine -> 2e-6",
+    "_release4x": "as chain default, but samples whose action chunk contains a gripper release (closed->open) weighted 4x in the action loss",
+}
+
 TASKS = [
     dict(task_index=76, name="dispose_of_glass", ep_start=15200, ep_end=15400),
     dict(task_index=80, name="clean_up_broken_glass", ep_start=16000, ep_end=16200),
@@ -88,7 +96,13 @@ def delete_task_data(task: dict) -> None:
     log.info(f"[task {task['task_index']}] deleted local dataset: {removed}")
 
 
-def train_task(task: dict, init_params: str, num_steps: int, save_interval: int, peak_lr: float, end_lr: float, warmup: int | None, tag: str) -> str:
+def hf_folder(task: dict, tag: str) -> str:
+    """Fixed HF folder of a task's FINAL checkpoint (gets a READY marker once
+    verified). Intermediate saves go under partial/<folder>/step<N>/ instead."""
+    return f"task{task['task_index']}_{task['name']}{tag}"
+
+
+def train_task(task: dict, init_params: str, num_steps: int, save_interval: int, peak_lr: float, end_lr: float, warmup: int | None, tag: str, release_weight: float = 1.0) -> str:
     exp_name = f"chain768087_task{task['task_index']}{tag}"
     if warmup is None:
         warmup = max(1, round(WARMUP_FRAC * num_steps))
@@ -118,6 +132,9 @@ def train_task(task: dict, init_params: str, num_steps: int, save_interval: int,
             # 12GB copy on /workspace.
             "--save-interval", str(save_interval),
             "--keep-period", "100000",
+            "--release-weight", str(release_weight),
+            "--partial-hf-repo", HF_REPO,
+            "--partial-hf-prefix", f"partial/{hf_folder(task, tag)}",
         ],
         cwd=str(REPO_ROOT),
         env=dict(os.environ, XLA_PYTHON_CLIENT_PREALLOCATE="false"),
@@ -141,7 +158,7 @@ def train_task(task: dict, init_params: str, num_steps: int, save_interval: int,
 def push_checkpoint(task: dict, params_path: str, num_steps: int, tag: str) -> None:
     api = HfApi()
     step_dir = Path(params_path).parent
-    path_in_repo = f"task{task['task_index']}_{task['name']}{tag}"
+    path_in_repo = hf_folder(task, tag)
     log.info(f"[task {task['task_index']}] pushing {step_dir} -> {HF_REPO}/{path_in_repo}")
     t0 = time.time()
     for attempt in range(1, 4):
@@ -167,10 +184,25 @@ def push_checkpoint(task: dict, params_path: str, num_steps: int, tag: str) -> N
     if not pushed_params or not pushed_stats:
         raise RuntimeError(f"[task {task['task_index']}] push verification FAILED under {path_in_repo}: {len(pushed_params)} params files, {len(pushed_stats)} norm_stats")
     log.info(f"[task {task['task_index']}] push verified: {len(pushed_params)} params files + norm_stats under {path_in_repo}")
+    # READY marker last, only after verification: the eval pod polls for
+    # <folder>/READY and must never see a half-uploaded checkpoint.
+    ready = json.dumps(dict(
+        task_index=task["task_index"], task_name=task["name"], folder=path_in_repo, num_steps=num_steps,
+        recipe=RECIPE.get(tag, "chain default"), params_files=len(pushed_params),
+        pushed_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        norm_stats="bundled under assets/ (Ilia's); decode with these",
+    ), indent=1)
+    api.upload_file(path_or_fileobj=ready.encode(), path_in_repo=f"{path_in_repo}/READY", repo_id=HF_REPO,
+                    commit_message=f"READY: {path_in_repo}")
+    log.info(f"[task {task['task_index']}] READY marker written: {path_in_repo}/READY")
+    # The final is in place; the crash-recovery partial for this run is obsolete.
+    if any(f.startswith(f"partial/{path_in_repo}/") for f in files):
+        api.delete_folder(repo_id=HF_REPO, path_in_repo=f"partial/{path_in_repo}", commit_message=f"drop partials of {path_in_repo} (final pushed)")
+        log.info(f"[task {task['task_index']}] removed partial/{path_in_repo}")
 
 
 def main(num_steps: int, tasks: list[int], resume_from: str | None, save_interval: int,
-         peak_lr: float, end_lr: float, warmup: int | None, tag: str):
+         peak_lr: float, end_lr: float, warmup: int | None, tag: str, release_weight: float = 1.0):
     current = resume_from or INIT_CKPT
     prev_to_clean = None
     for task in TASKS:
@@ -178,7 +210,7 @@ def main(num_steps: int, tasks: list[int], resume_from: str | None, save_interva
             continue
         log.info(f"=== TASK {task['task_index']} ({task['name']}) START ===")
         download_task(task)
-        final = train_task(task, current, num_steps, save_interval, peak_lr, end_lr, warmup, tag)
+        final = train_task(task, current, num_steps, save_interval, peak_lr, end_lr, warmup, tag, release_weight)
         push_checkpoint(task, final, num_steps, tag)
         delete_task_data(task)
         # Park the pushed checkpoint on the overlay disk (next task's init).
@@ -212,5 +244,7 @@ if __name__ == "__main__":
     p.add_argument("--end-lr", type=float, default=END_LR)
     p.add_argument("--warmup-steps", type=int, default=None)
     p.add_argument("--tag", type=str, default="")
+    # >1: upweight samples whose action chunk contains a gripper release (train.release_mask).
+    p.add_argument("--release-weight", type=float, default=1.0)
     a = p.parse_args()
-    main(a.num_steps, a.tasks, a.resume_from, a.save_interval, a.peak_lr, a.end_lr, a.warmup_steps, a.tag)
+    main(a.num_steps, a.tasks, a.resume_from, a.save_interval, a.peak_lr, a.end_lr, a.warmup_steps, a.tag, a.release_weight)

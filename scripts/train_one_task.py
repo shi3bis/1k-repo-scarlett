@@ -37,7 +37,7 @@ CHECKPOINT_BASE = REPO_ROOT / "outputs/checkpoints" / CONFIG_NAME
 ILIA_ASSETS_BASE_DIR = str(REPO_ROOT / "outputs/assets_ilia")
 
 
-def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS):
+def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, release_weight: float = 1.0, partial_hf_repo: str | None = None, partial_hf_prefix: str | None = None):
     cfg = _config.get_config("pi_behavior_b1k_fast_100task")
     cfg = dataclasses.replace(
         cfg,
@@ -66,7 +66,30 @@ def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path:
             ),
         ),
     )
-    _train.main(cfg)
+    on_saved = None
+    if partial_hf_repo and partial_hf_prefix:
+        def on_saved(step, step_dir):
+            # Intermediate (crash-recovery) saves go to a separate partial/ path on
+            # HF with no READY marker, so the eval pod never mistakes them for a
+            # finished checkpoint; only the latest one is kept there. The final
+            # step is pushed by the caller into the task's fixed folder instead.
+            if step == num_steps - 1:
+                return
+            from huggingface_hub import HfApi
+            api = HfApi()
+            dest = f"{partial_hf_prefix}/step{step}"
+            try:
+                api.upload_folder(repo_id=partial_hf_repo, folder_path=str(step_dir), path_in_repo=dest,
+                                  allow_patterns=["params/**", "assets/**"], commit_message=f"partial save step {step} (not final)")
+                files = api.list_repo_files(partial_hf_repo)
+                old = sorted({f.split("/")[len(partial_hf_prefix.split("/"))] for f in files
+                              if f.startswith(partial_hf_prefix + "/step")} - {f"step{step}"})
+                for o in old:
+                    api.delete_folder(repo_id=partial_hf_repo, path_in_repo=f"{partial_hf_prefix}/{o}", commit_message=f"drop older partial {o}")
+                print(f"PARTIAL_PUSHED:{partial_hf_repo}/{dest} (removed older: {old})", flush=True)
+            except Exception as e:  # noqa: BLE001 -- never kill training over a partial push
+                print(f"PARTIAL_PUSH_FAILED step {step}: {e!r}", flush=True)
+    _train.main(cfg, on_checkpoint_saved=on_saved, release_weight=release_weight)
 
     final_step = num_steps - 1
     step_dir = CHECKPOINT_BASE / exp_name / str(final_step)
@@ -106,6 +129,11 @@ if __name__ == "__main__":
     # (default preallocation caps JAX at 75% of VRAM).
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     p.add_argument("--num-workers", type=int, default=NUM_WORKERS)
+    # >1: weight samples whose action chunk contains a gripper release
+    # (closed -> open) this many times in the batch-mean loss (train.release_mask).
+    p.add_argument("--release-weight", type=float, default=1.0)
+    p.add_argument("--partial-hf-repo", type=str, default=None)
+    p.add_argument("--partial-hf-prefix", type=str, default=None)
     args = p.parse_args()
     lr_schedule = {k: v for k, v in dict(warmup_steps=args.warmup_steps, peak_lr=args.peak_lr, decay_steps=args.decay_steps, decay_lr=args.decay_lr).items() if v is not None}
-    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers)
+    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers, args.release_weight, args.partial_hf_repo, args.partial_hf_prefix)
