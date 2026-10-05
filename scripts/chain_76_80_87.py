@@ -62,6 +62,7 @@ RGB_KEYS = [
 PARTIAL_PUSH = False  # set from --partial-push
 RECIPE = {
     "": "3000 steps from the previous chain task's final, bs 32, corr noise, Ilia stats, LR warmup 300 -> 2e-5 cosine -> 2e-6",
+    "_round2": "round 2 of the chain: 2000 steps from the previous task's final (round 2 starts from round-1 task 87 plain), bs 32, corr noise, Ilia stats, LR warmup 200 (10%) -> 2e-5 cosine -> 2e-6",
     "_release4x": "as chain default, but samples whose action chunk contains a gripper release (closed->open) weighted 4x in the action loss",
 }
 
