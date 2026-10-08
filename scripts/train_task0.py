@@ -136,11 +136,28 @@ def push(params_path: str) -> None:
 
 
 def main():
+    global INIT_CKPT, EXP_NAME, NUM_STEPS, HF_FOLDER, RECIPE
+    import argparse
+    p = argparse.ArgumentParser()
+    # Continuation runs: start from an earlier task 0 final instead of ext100.
+    p.add_argument("--init-ckpt", default=INIT_CKPT)
+    p.add_argument("--init-label", default="ext100 base")
+    p.add_argument("--exp-name", default=EXP_NAME)
+    p.add_argument("--num-steps", type=int, default=NUM_STEPS)
+    p.add_argument("--hf-folder", default=HF_FOLDER)
+    p.add_argument("--no-push", action="store_true", help="keep the final local only (HF quota)")
+    args = p.parse_args()
+    INIT_CKPT, EXP_NAME, NUM_STEPS, HF_FOLDER = args.init_ckpt, args.exp_name, args.num_steps, args.hf_folder
+    RECIPE = (f"{NUM_STEPS} steps from {args.init_label}, bs {BATCH_SIZE}, corr noise, Ilia stats, "
+              f"LR warmup {WARMUP} -> {PEAK_LR:g} cosine -> {END_LR:g}")
     log.info(f"=== task 0 (turning_on_radio) START: {RECIPE} ===")
     HfApi().create_repo(HF_REPO, private=True, exist_ok=True)
     download()
     final = train()
-    push(final)
+    if args.no_push:
+        log.info("--no-push: final kept local only")
+    else:
+        push(final)
     delete_data()
     log.info(f"=== task 0 DONE, local checkpoint: {Path(final).parent} ===")
     print(f"TASK0_FINAL_STEP_DIR:{Path(final).parent}", flush=True)
