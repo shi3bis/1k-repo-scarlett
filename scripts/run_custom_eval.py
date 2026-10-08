@@ -54,9 +54,37 @@ NEW_TASK_INDICES = {
     "re_shelving_library_books": 55,
     "dispose_of_glass": 76,
     "store_batteries": 82,
+    # 2026-10-04: chain-76-80-87 tasks, ids from 2026-challenge-task-instances/metadata/B100_task_misc.csv
+    "clean_up_broken_glass": 80,
+    "collecting_aluminum_cans": 87,
 }
 eval_utils_mod.TASK_NAMES_TO_INDICES.update(NEW_TASK_INDICES)
 eval_utils_mod.TASK_INDICES_TO_NAMES = {v: k for k, v in eval_utils_mod.TASK_NAMES_TO_INDICES.items()}
+
+# 2026-10-04: asset-version drift. The 2026 task-instance JSONs were saved with newer object assets than our
+# behavior-1k-assets 3.7.2rc1; e.g. restaurant_diner (task 80) has 4x metal_bottom_cabinet_bbjuqu saved with 2 joint
+# positions while the local bbjuqu USD has 1 joint (door) -> "shape mismatch ... [2] ... [1, 1]" in scene init.
+# Fit saved joint_pos/joint_vel to the loaded object's DOF (truncate / zero-pad) and log it, instead of crashing.
+import omnigibson.prims.entity_prim as _entity_prim_mod
+
+_orig_entity_load_state = _entity_prim_mod.EntityPrim._load_state
+
+
+def _dof_tolerant_load_state(self, state):
+    if "joints" not in state and self.n_joints > 0 and "joint_pos" in state and len(state["joint_pos"]) != self.n_dof:
+        import torch as _th
+
+        def _fit(x):
+            x = _th.as_tensor(x, dtype=_th.float32).flatten()
+            return x[: self.n_dof] if len(x) >= self.n_dof else _th.cat([x, _th.zeros(self.n_dof - len(x))])
+
+        print(f"[run_custom_eval] DOF mismatch for {self.name}: saved {len(state['joint_pos'])} joint values, "
+              f"object has {self.n_dof} -> fitted", flush=True)
+        state = dict(state, joint_pos=_fit(state["joint_pos"]), joint_vel=_fit(state["joint_vel"]))
+    return _orig_entity_load_state(self, state)
+
+
+_entity_prim_mod.EntityPrim._load_state = _dof_tolerant_load_state
 
 DATASET_2026_ROOT = None  # set in main() once gm.DATA_PATH is known
 
@@ -183,6 +211,41 @@ TASK_BDDL_OVERRIDES = {
     )
 )
 """,
+    # 2026-10-04: task 80. Neither the pinned nor bddl3 problem0 matches the 2026 restaurant_diner template (both have
+    # a broom.n.01_1 and one floor; the template's inst_to_name has no broom and floor.n.01_1 = floors_cxcxqq_0
+    # (dining_room_0, where the 3 broken_glass are) + floor.n.01_2 = floors_fcxkki_0 (corridor_0, trash_can_96)).
+    # Written to match that template (+ metadata/task_custom_lists.json: rooms corridor+dining_room); goal unchanged.
+    "clean_up_broken_glass": """\
+(define (problem clean_up_broken_glass-0)
+    (:domain omnigibson)
+
+    (:objects
+        broken__glass.n.01_1 broken__glass.n.01_2 broken__glass.n.01_3 - broken__glass.n.01
+        floor.n.01_1 floor.n.01_2 - floor.n.01
+        ashcan.n.01_1 - ashcan.n.01
+        agent.n.01_1 - agent.n.01
+    )
+
+    (:init
+        (ontop broken__glass.n.01_1 floor.n.01_1)
+        (ontop broken__glass.n.01_2 floor.n.01_1)
+        (ontop broken__glass.n.01_3 floor.n.01_1)
+        (ontop ashcan.n.01_1 floor.n.01_2)
+        (ontop agent.n.01_1 floor.n.01_1)
+        (inroom floor.n.01_1 dining_room)
+        (inroom floor.n.01_2 corridor)
+    )
+
+    (:goal
+        (and
+            (forall
+                (?broken__glass.n.01 - broken__glass.n.01)
+                (inside ?broken__glass.n.01 ?ashcan.n.01_1)
+            )
+        )
+    )
+)
+""",
 }
 
 
@@ -218,6 +281,7 @@ from omnigibson.learning.utils.eval_utils import (  # noqa: E402
 )
 from omnigibson.learning.utils.obs_utils import create_video_writer  # noqa: E402
 from omnigibson.macros import gm  # noqa: E402
+import omnigibson.utils.transform_utils as T  # noqa: E402
 
 logger = logging.getLogger("custom_eval")
 
@@ -521,15 +585,46 @@ def main():
             for metric in evaluator.metrics:
                 metric.start_callback(evaluator.env)
             steps = 0
+            # 2026-10-04: pose log for path analysis (base path + task-object positions). One JSON line per record:
+            #   {"t": step, "base": [x, y, yaw]} every 10 steps; {"t": step, "objs": {inst: [x, y, z]}} at step 0 and every
+            #   500 steps (task-scope objects only; agent/floor/rooms skipped). File: <log_path>/poses/<task>_<inst>.jsonl
+            pose_dir = Path(config.log_path) / "poses"
+            pose_dir.mkdir(parents=True, exist_ok=True)
+            pose_f = open(pose_dir / f"{args.task_name}_{idx}.jsonl", "w")
+            scope = {
+                k: v for k, v in (evaluator.env.task.object_scope or {}).items()
+                if not k.startswith(("agent.", "floor.")) and getattr(v, "exists", True) and v.wrapped_obj is not None
+            }
+
+            def _log_pose(t, with_objs=False):
+                pos, quat = evaluator.robot.get_position_orientation()
+                yaw = float(T.quat2euler(quat)[2])
+                rec = {"t": t, "base": [round(float(pos[0]), 3), round(float(pos[1]), 3), round(yaw, 4)]}
+                if with_objs or t % 500 == 0:
+                    objs = {}
+                    for k, v in scope.items():
+                        try:
+                            op = v.get_position_orientation()[0]
+                            objs[k] = [round(float(op[0]), 3), round(float(op[1]), 3), round(float(op[2]), 3)]
+                        except Exception:
+                            pass
+                    rec["objs"] = objs
+                pose_f.write(json.dumps(rec) + "\n")
+
+            _log_pose(0)
             while not done:
                 terminated, truncated = evaluator.step()
                 steps += 1
+                if steps % 10 == 0:
+                    _log_pose(steps)
                 if terminated or truncated:
                     done = True
                 if config.write_video:
                     evaluator._write_video()
                 if evaluator.env._current_step % 200 == 0:
                     logger.info(f"instance={idx} step={evaluator.env._current_step}")
+            _log_pose(steps, with_objs=True)
+            pose_f.close()
             for metric in evaluator.metrics:
                 metric.end_callback(evaluator.env)
             if replay_actor is not None and args.replay_record:
