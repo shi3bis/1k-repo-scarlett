@@ -53,14 +53,14 @@ TASK_NUM_STAGES = (
     11, 10, 10, 13, 5, 5, 14, 6, 8, 10,  # Tasks 30-39
     5, 15, 8, 15, 12, 11, 9, 14, 15, 15,  # Tasks 40-49
     0, 0, 0, 0, 0, 11, 0, 0, 0, 0,  # Tasks 50-59 (55=11)
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # Tasks 60-69
-    0, 0, 0, 0, 0, 0, 11, 0, 0, 0,  # Tasks 70-79 (76=11)
+    0, 0, 0, 3, 0, 0, 0, 0, 0, 0,  # Tasks 60-69 (63=3)
+    0, 0, 0, 0, 0, 0, 11, 0, 4, 0,  # Tasks 70-79 (76=11, 78=4)
     10, 0, 9, 0, 0, 0, 0, 12, 0, 0,  # Tasks 80-89 (80=10, 82=9, 87=12)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  # Tasks 90-99
 )
 
 MAX_NUM_STAGES = 15  # Maximum stages per task
-TOTAL_TASK_STAGE_EMBEDDINGS = sum(TASK_NUM_STAGES)  # now 649 total embeddings (596 + 11 + 11 + 10 + 9 + 12)
+TOTAL_TASK_STAGE_EMBEDDINGS = sum(TASK_NUM_STAGES)  # now 656 total embeddings (596 + 11 + 11 + 10 + 9 + 12 + 3 + 4)
 
 # Cumulative offsets for indexing into task_stage_embeddings (as tuple)
 TASK_STAGE_OFFSETS = tuple([0] + [sum(TASK_NUM_STAGES[:i+1]) for i in range(len(TASK_NUM_STAGES) - 1)])

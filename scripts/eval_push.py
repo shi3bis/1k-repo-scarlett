@@ -74,7 +74,7 @@ def run_json(cmd: list[str], marker: str, log_path: Path) -> dict:
 def main(a):
     ckpt = Path(a.checkpoint_dir)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    sub_log = LOG_DIR / f"push_evals_768087_{a.label}.log"
+    sub_log = LOG_DIR / f"push_evals_{a.log_tag}_{a.label}.log"
     tasks = [("own", a.own_task)] if a.own_task is not None else []
     tasks += [("chain", t) for t in a.extra_tasks] + [("known", t) for t in a.known_tasks]
 
@@ -102,9 +102,9 @@ def main(a):
     for f in downloaded:
         (DATA_ROOT / f).unlink(missing_ok=True)
 
-    with open(LOG_DIR / "push_evals_768087.jsonl", "a") as f:
+    with open(LOG_DIR / f"push_evals_{a.log_tag}.jsonl", "a") as f:
         f.write(json.dumps(record) + "\n")
-    md = LOG_DIR / "push_evals_768087.md"
+    md = LOG_DIR / f"push_evals_{a.log_tag}.md"
     if not md.exists():
         md.write_text("# Per-push offline evals, 76 -> 80 -> 87 chain\n\n"
                       "loss/action/grippers/subacc: teacher-forced training loss on a fixed sample (eval_loss_one.py). "
@@ -144,6 +144,7 @@ if __name__ == "__main__":
     p.add_argument("--extra-tasks", type=int, nargs="*", default=[])
     p.add_argument("--known-tasks", type=int, nargs="*", default=KNOWN_TASKS)
     p.add_argument("--hf-repo", default="shi2bis/tasks_76_80_87")
+    p.add_argument("--log-tag", default="768087", help="logs/push_evals_<tag>.{jsonl,md}")
     p.add_argument("--hf-path", default=None, help="checkpoint's folder in the HF repo; eval_metrics.json goes there")
     p.add_argument("--loss-episodes", type=int, default=6)
     p.add_argument("--num-batches", type=int, default=16)
