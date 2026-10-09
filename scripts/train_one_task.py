@@ -37,7 +37,7 @@ CHECKPOINT_BASE = REPO_ROOT / "outputs/checkpoints" / CONFIG_NAME
 ILIA_ASSETS_BASE_DIR = str(REPO_ROOT / "outputs/assets_ilia")
 
 
-def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, release_weight: float = 1.0, partial_hf_repo: str | None = None, partial_hf_prefix: str | None = None):
+def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, release_weight: float = 1.0, partial_hf_repo: str | None = None, partial_hf_prefix: str | None = None, episodes: list[int] | None = None):
     cfg = _config.get_config("pi_behavior_b1k_fast_100task")
     cfg = dataclasses.replace(
         cfg,
@@ -62,7 +62,7 @@ def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path:
             cfg.data,
             base_config=dataclasses.replace(
                 cfg.data.base_config,
-                episodes_index=list(range(ep_start, ep_end)),
+                episodes_index=episodes if episodes is not None else list(range(ep_start, ep_end)),
             ),
         ),
     )
@@ -134,6 +134,12 @@ if __name__ == "__main__":
     p.add_argument("--release-weight", type=float, default=1.0)
     p.add_argument("--partial-hf-repo", type=str, default=None)
     p.add_argument("--partial-hf-prefix", type=str, default=None)
+    # Mixed-task training: "15200:15400,16000:16200" overrides --ep-start/--ep-end
+    # with the union of these ranges (one dataset, frames sampled uniformly).
+    p.add_argument("--episode-ranges", type=str, default=None)
     args = p.parse_args()
+    episodes = None
+    if args.episode_ranges:
+        episodes = [e for r in args.episode_ranges.split(",") for e in range(*map(int, r.split(":")))]
     lr_schedule = {k: v for k, v in dict(warmup_steps=args.warmup_steps, peak_lr=args.peak_lr, decay_steps=args.decay_steps, decay_lr=args.decay_lr).items() if v is not None}
-    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers, args.release_weight, args.partial_hf_repo, args.partial_hf_prefix)
+    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers, args.release_weight, args.partial_hf_repo, args.partial_hf_prefix, episodes)

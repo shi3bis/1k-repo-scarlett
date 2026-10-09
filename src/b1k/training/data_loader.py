@@ -3,8 +3,10 @@
 Reference: https://github.com/wensi-ai/openpi/tree/behavior
 """
 
+import json
 import logging
 import time
+from pathlib import Path
 
 # Import all base data loading from OpenPI
 from openpi.training.data_loader import (
@@ -46,6 +48,32 @@ class DataLoaderImpl(DataLoader):
             yield Observation.from_dict(batch), batch["actions"]
 
 
+def _drop_depth_features(root: Path) -> None:
+    """Remove the depth_linear video features from the local meta/info.json.
+
+    The policy only uses the rgb cameras, but LeRobotDataset downloads (and
+    decodes every sample) all video features listed in info.json. For the
+    joint 76+80+87 run the depth videos alone filled the overlay disk
+    (2026-10-08). Editing the local file (original kept as info.json.orig)
+    instead of monkeypatching lerobot means the dataset object, and the
+    pickled copies dataloader workers get, never see the depth features.
+    """
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        return
+    info = json.loads(info_path.read_text())
+    depth = [k for k in info.get("features", {}) if "depth" in k]
+    if not depth:
+        return
+    backup = info_path.with_name("info.json.orig")
+    if not backup.exists():
+        backup.write_text(info_path.read_text())
+    for k in depth:
+        del info["features"][k]
+    info_path.write_text(json.dumps(info, indent=4))
+    logging.info(f"Dropped depth features from {info_path}: {depth}")
+
+
 def create_behavior_dataset(data_config: _config.DataConfig, action_horizon: int, seed: int | None = None) -> Dataset:
     """Create a BEHAVIOR-1K dataset for training.
 
@@ -74,6 +102,7 @@ def create_behavior_dataset(data_config: _config.DataConfig, action_horizon: int
         seed = int(time.time() * 1000) % (2**32)
         logging.info(f"Using random seed for LeRobotDataset: {seed}")
 
+    _drop_depth_features(Path(data_config.behavior_dataset_root))
     dataset = LeRobotDataset(
         data_config.repo_id,
         root=data_config.behavior_dataset_root,
