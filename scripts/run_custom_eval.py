@@ -57,6 +57,9 @@ NEW_TASK_INDICES = {
     # 2026-10-04: chain-76-80-87 tasks, ids from 2026-challenge-task-instances/metadata/B100_task_misc.csv
     "clean_up_broken_glass": 80,
     "collecting_aluminum_cans": 87,
+    # 2026-10-09: attached-predicate tasks (35 is in the original 50 already)
+    "installing_smoke_detectors": 63,
+    "make_cabinet_doors": 78,
 }
 eval_utils_mod.TASK_NAMES_TO_INDICES.update(NEW_TASK_INDICES)
 eval_utils_mod.TASK_INDICES_TO_NAMES = {v: k for k, v in eval_utils_mod.TASK_NAMES_TO_INDICES.items()}
@@ -241,6 +244,40 @@ TASK_BDDL_OVERRIDES = {
             (forall
                 (?broken__glass.n.01 - broken__glass.n.01)
                 (inside ?broken__glass.n.01 ?ashcan.n.01_1)
+            )
+        )
+    )
+)
+""",
+    # 2026-10-09: task 63. The pinned/bddl3 problem0 has 2 fire alarms + 2 wall nails; the 2026 house_double_floor_lower
+    # template has 1 fire_alarm (fire_alarm_102, on coffee_table_koagbh_0 in living_room_0), 1 wall_nail (kitchen_0) and a
+    # table.n.02_1. Written to match that template; goal unchanged (the alarm attached to the nail).
+    "installing_smoke_detectors": """\
+(define (problem installing_smoke_detectors-0)
+    (:domain omnigibson)
+
+    (:objects
+        wall_nail.n.01_1 - wall_nail.n.01
+        floor.n.01_1 - floor.n.01
+        table.n.02_1 - table.n.02
+        fire_alarm.n.02_1 - fire_alarm.n.02
+        agent.n.01_1 - agent.n.01
+    )
+
+    (:init
+        (ontop fire_alarm.n.02_1 table.n.02_1)
+        (inroom wall_nail.n.01_1 kitchen)
+        (inroom table.n.02_1 living_room)
+        (inroom floor.n.01_1 living_room)
+        (ontop agent.n.01_1 floor.n.01_1)
+    )
+
+    (:goal
+        (and
+            (forpairs
+                (?fire_alarm.n.02 - fire_alarm.n.02)
+                (?wall_nail.n.01 - wall_nail.n.01)
+                (attached ?fire_alarm.n.02 ?wall_nail.n.01)
             )
         )
     )
