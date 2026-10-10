@@ -21,6 +21,8 @@ from openpi.shared import array_typing as at
 
 ArrayT = TypeVar("ArrayT", bound=jax.Array | torch.Tensor | np.ndarray)
 
+STATE_NOISE_DIMS = 23  # base_qvel 3 + trunk 4 + left arm 7 + left grip 1 + right arm 7 + right grip 1
+
 IMAGE_KEYS = (
     "base_0_rgb",
     "left_wrist_0_rgb",
@@ -85,6 +87,7 @@ def preprocess_observation(
     train: bool = False,
     image_keys: Sequence[str] = IMAGE_KEYS,
     image_resolution: tuple[int, int] = IMAGE_RESOLUTION,
+    state_noise_std: float = 0.0,
 ) -> Observation:
     """Preprocess observations with image augmentation and FAST fields preservation."""
     if not set(image_keys).issubset(observation.images):
@@ -129,10 +132,16 @@ def preprocess_observation(
         else:
             out_masks[key] = jnp.asarray(observation.image_masks[key])
 
+    state = observation.state
+    if train and state_noise_std > 0:
+        # Real proprio dims only (extract_state_from_proprio: 23); the rest is zero padding.
+        noise = state_noise_std * jax.random.normal(jax.random.fold_in(rng, 1), state.shape, dtype=state.dtype)
+        state = state + noise * (jnp.arange(state.shape[-1]) < STATE_NOISE_DIMS)
+
     return Observation(
         images=out_images,
         image_masks=out_masks,
-        state=observation.state,
+        state=state,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,

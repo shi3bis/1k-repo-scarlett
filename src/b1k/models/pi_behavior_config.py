@@ -90,6 +90,11 @@ class PiBehaviorConfig(_model.BaseModelConfig):
     # Whether to use correlated noise matching action covariance structure
     # Requires correlation matrix in norm_stats (computed by compute_norm_stats.py)
     use_correlated_noise: bool = True
+
+    # Training-only Gaussian noise on the normalized (z-score) proprio state, std in units of
+    # each dimension's spread; applied to the first STATE_NOISE_DIMS real dims, not the padding.
+    # 0 = off. Inference never adds it.
+    state_noise_std: float = 0.0
     
     # Shrinkage parameter for correlation regularization
     # Applied as: S_regularized = beta * S + (1-beta) * I

@@ -696,7 +696,8 @@ class PiBehavior(_model.BaseModel):
         losses = {}
 
         preprocess_rng, rng = jax.random.split(rng)
-        observation = preprocess_observation(preprocess_rng, observation, train=train)
+        observation = preprocess_observation(preprocess_rng, observation, train=train,
+                                             state_noise_std=self.config.state_noise_std)
 
         batch_size = actions.shape[0]
         
