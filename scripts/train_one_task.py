@@ -37,7 +37,7 @@ CHECKPOINT_BASE = REPO_ROOT / "outputs/checkpoints" / CONFIG_NAME
 ILIA_ASSETS_BASE_DIR = str(REPO_ROOT / "outputs/assets_ilia")
 
 
-def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, release_weight: float = 1.0, partial_hf_repo: str | None = None, partial_hf_prefix: str | None = None):
+def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path: str, exp_name: str, num_steps: int = NUM_STEPS, assets_base_dir: str = ILIA_ASSETS_BASE_DIR, corr_noise: bool = False, save_interval: int = 100000, keep_period: int | None = None, lr_schedule: dict | None = None, batch_size: int = BATCH_SIZE, num_workers: int = NUM_WORKERS, release_weight: float = 1.0, partial_hf_repo: str | None = None, partial_hf_prefix: str | None = None, state_noise_std: float = 0.0):
     cfg = _config.get_config("pi_behavior_b1k_fast_100task")
     cfg = dataclasses.replace(
         cfg,
@@ -57,7 +57,7 @@ def main(task_index: int, ep_start: int, ep_end: int, weight_loader_params_path:
         seed=0,
         save_train_state=False,
         weight_loader=weight_loaders.PiBehaviorWeightLoader(weight_loader_params_path),
-        model=dataclasses.replace(cfg.model, use_correlated_noise=corr_noise),
+        model=dataclasses.replace(cfg.model, use_correlated_noise=corr_noise, state_noise_std=state_noise_std),
         data=dataclasses.replace(
             cfg.data,
             base_config=dataclasses.replace(
@@ -134,6 +134,7 @@ if __name__ == "__main__":
     p.add_argument("--release-weight", type=float, default=1.0)
     p.add_argument("--partial-hf-repo", type=str, default=None)
     p.add_argument("--partial-hf-prefix", type=str, default=None)
+    p.add_argument("--state-noise-std", type=float, default=0.0, help="training-only noise on the normalized proprio state")
     args = p.parse_args()
     lr_schedule = {k: v for k, v in dict(warmup_steps=args.warmup_steps, peak_lr=args.peak_lr, decay_steps=args.decay_steps, decay_lr=args.decay_lr).items() if v is not None}
-    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers, args.release_weight, args.partial_hf_repo, args.partial_hf_prefix)
+    main(args.task_index, args.ep_start, args.ep_end, args.weight_loader_params_path, args.exp_name, args.num_steps, args.assets_base_dir, args.corr_noise, args.save_interval, args.keep_period, lr_schedule, args.batch_size, args.num_workers, args.release_weight, args.partial_hf_repo, args.partial_hf_prefix, args.state_noise_std)
