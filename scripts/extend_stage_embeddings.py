@@ -1,9 +1,9 @@
 """Build a base checkpoint whose task_stage_embeddings table matches the
-current TASK_NUM_STAGES (pi_behavior_config.py), starting from ext100_t80t87.
+current TASK_NUM_STAGES (pi_behavior_config.py), starting from ext100_t80t87_t63t78.
 
-ext100_t80t87's table is laid out for OLD_TASK_NUM_STAGES (the 649-row layout of
-branch task76-resume-2000-lowlr: 2025 tasks 0-49 + 55/76/80/82/87). This branch
-adds 63 (3 stages) and 78 (4), ceil(mean episode length / 900) as for 80/87.
+ext100_t80t87_t63t78's table is laid out for OLD_TASK_NUM_STAGES (the 656-row layout of
+branch attach-35-63-78: 2025 tasks 0-49 + 55/63/76/78/80/82/87). This branch adds the
+BDDL `covered` tasks 57 (5 stages), 60 (4), 69 (3), 93 (5), ceil(mean episode length / 900).
 Rows are indexed by cumulative offsets in task-index order, so a new task can't
 just be appended at the end: its rows must be INSERTED at its offset, shifting
 every later task. This rebuilds the table task by task: existing tasks' rows are
@@ -11,8 +11,7 @@ copied byte-identically, new tasks get rows drawn from N(mean, std) of the
 existing table (same init extend_embeddings.py used for 55/76/82).
 task_embeddings already has rows for all 100 tasks.
 
---src/--dst also let it re-lay-out any other 649-row checkpoint (e.g. a joint
-76/80/87 final) the same way.
+--src/--dst also let it re-lay-out any other 656-row checkpoint the same way.
 
 Run on CPU so it doesn't contend for the GPU:
   JAX_PLATFORMS=cpu PYTHONPATH=<worktree>/src python scripts/extend_stage_embeddings.py
@@ -28,14 +27,15 @@ from openpi.models import model as _model
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from b1k.models.pi_behavior_config import TASK_NUM_STAGES  # noqa: E402
 
-SRC = "/workspace/persistent/behavior/checkpoints/behavior_50t_checkpoint_ext100_t80t87/params"
-DST = "/workspace/persistent/behavior/checkpoints/behavior_50t_checkpoint_ext100_t80t87_t63t78/params"
+SRC = "/workspace/persistent/behavior/checkpoints/behavior_50t_checkpoint_ext100_t80t87_t63t78/params"
+DST = "/workspace/persistent/behavior/checkpoints/behavior_50t_checkpoint_ext100_t80t87_t63t78_cov4/params"
 SEED = 0
 
-# The layout ext100_t80t87 was built with: 2025 tasks 0-49 + 55/76/80/82/87.
+# The layout ext100_t80t87_t63t78 was built with: 2025 tasks 0-49 + 55/63/76/78/80/82/87.
 OLD_TASK_NUM_STAGES = list(TASK_NUM_STAGES)
-OLD_TASK_NUM_STAGES[63] = OLD_TASK_NUM_STAGES[78] = 0
-assert sum(OLD_TASK_NUM_STAGES) == 649
+for _t in (57, 60, 69, 93):
+    OLD_TASK_NUM_STAGES[_t] = 0
+assert sum(OLD_TASK_NUM_STAGES) == 656
 
 def restore(path):
     # openpi's own loader (the version-specific orbax metadata API differs from
