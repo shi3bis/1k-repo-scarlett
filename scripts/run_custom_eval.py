@@ -319,6 +319,7 @@ from omnigibson.learning.utils.eval_utils import (  # noqa: E402
 from omnigibson.learning.utils.obs_utils import create_video_writer  # noqa: E402
 from omnigibson.macros import gm  # noqa: E402
 import omnigibson.utils.transform_utils as T  # noqa: E402
+import torch as th  # noqa: E402
 
 logger = logging.getLogger("custom_eval")
 
@@ -571,6 +572,20 @@ def main():
     import omnigibson.scenes.interactive_traversable_scene as its_mod
     its_mod.get_task_instance_path = _get_task_instance_path_2026
     eval_mod.Evaluator.load_env = _patched_load_env
+
+    # 2026-10-10: also send the robot's WORLD base pose (x, y, yaw) to the policy server. The proprio base_qpos (256-d
+    # [244:247]) is the holonomic base's virtual-joint position, measured from the robot's load pose, not world coordinates,
+    # so server-side rules that need the room (B1K_ROOM_STAGE_TASK) read this key instead.
+    _orig_preprocess_obs = eval_mod.Evaluator._preprocess_obs
+
+    def _preprocess_obs_with_world_pose(self, obs):
+        out = _orig_preprocess_obs(self, obs)
+        pos, quat = self.robot.get_position_orientation()
+        yaw = T.quat2euler(quat)[2]
+        out["robot_r1::world_base_pose"] = th.tensor([float(pos[0]), float(pos[1]), float(yaw)], dtype=th.float32)
+        return out
+
+    eval_mod.Evaluator._preprocess_obs = _preprocess_obs_with_world_pose
     eval_mod.Evaluator.load_task_instance = _patched_load_task_instance
 
     eval_config_dir = str(Path(eval_mod.__file__).resolve().parent / "configs")
