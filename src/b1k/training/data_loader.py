@@ -32,6 +32,10 @@ import openpi.transforms as _transforms
 from b1k.models.observation import Observation
 from b1k.transforms_normalize import NormalizeWithPerTimestamp
 
+# Set by scripts/train_one_task.py (same process) to oversample frames around
+# pickups: {"task_index": 63, **pickup_weights.grasp_weights kwargs}. None = uniform.
+PICKUP_WEIGHTING: dict | None = None
+
 
 class DataLoaderImpl(DataLoader):
     """Custom DataLoader using our Observation with fast_tokens."""
@@ -224,6 +228,7 @@ def create_behavior_data_loader(
         logging.info(f"Using random seed: {seed}")
     
     dataset = create_behavior_dataset(data_config, action_horizon=config.model.action_horizon, seed=seed)
+    sampler = _pickup_sampler(dataset, seed) if PICKUP_WEIGHTING else None
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     data_loader = TorchDataLoader(
@@ -231,9 +236,39 @@ def create_behavior_data_loader(
         local_batch_size=config.batch_size // jax.process_count(),
         sharding=sharding,
         shuffle=shuffle,
+        sampler=sampler,
         num_batches=num_batches,
         num_workers=config.num_workers,
         seed=seed,
     )
     
     return DataLoaderImpl(data_config, data_loader)
+
+
+def _pickup_sampler(dataset, seed: int):
+    """WeightedRandomSampler over the (episode-filtered) dataset's rows: frames of
+    PICKUP_WEIGHTING["task_index"] get pickup_weights.grasp_weights, all others 1."""
+    import numpy as np
+    import torch
+    from b1k.training import pickup_weights
+
+    kw = dict(PICKUP_WEIGHTING)
+    task = kw.pop("task_index")
+    cols = dataset.hf_dataset.with_format("numpy", columns=["action", "episode_index", "frame_index", "task_index"])[:]
+    ep, fr, ti = cols["episode_index"], cols["frame_index"], cols["task_index"]
+    w = np.ones(len(ep), dtype=np.float64)
+    rows = np.flatnonzero(ti == task)
+    # grasp_weights needs each episode's rows contiguous and in frame order.
+    order = rows[np.lexsort((fr[rows], ep[rows]))]
+    tw, info = pickup_weights.grasp_weights(np.asarray(cols["action"])[order], ep[order], **kw)
+    w[order] = tw
+    assert len(w) == len(dataset), (len(w), len(dataset))
+    info.pop("recovery")
+    logging.info(
+        f"Pickup weighting task {task}: {info}; {np.mean(tw > 1):.3f} of its frames upweighted, "
+        f"{tw[tw > 1].sum() / tw.sum():.3f} of its samples; task share {tw.sum() / w.sum():.3f} "
+        f"(uniform {len(rows) / len(w):.3f})"
+    )
+    g = torch.Generator()
+    g.manual_seed(seed)
+    return torch.utils.data.WeightedRandomSampler(torch.as_tensor(w), num_samples=len(w), replacement=True, generator=g)

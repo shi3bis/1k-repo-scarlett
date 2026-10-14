@@ -138,8 +138,18 @@ if __name__ == "__main__":
     # with the union of these ranges (one dataset, frames sampled uniformly).
     p.add_argument("--episode-ranges", type=str, default=None)
     p.add_argument("--state-noise-std", type=float, default=0.0, help="training-only noise on the normalized proprio state")
+    # Oversample frames around this task's pickups (b1k.training.pickup_weights.grasp_weights):
+    # approach [c-150, c-10) x approach, close [c-10, c] x1, lift (c, c+60] x lift, retry episodes x recovery.
+    p.add_argument("--pickup-task", type=int, default=None)
+    p.add_argument("--pickup-approach-weight", type=float, default=4.0)
+    p.add_argument("--pickup-lift-weight", type=float, default=3.0)
+    p.add_argument("--pickup-recovery-weight", type=float, default=3.0)
     args = p.parse_args()
     episodes = None
+    if args.pickup_task is not None:
+        from b1k.training import data_loader as _dl
+        _dl.PICKUP_WEIGHTING = dict(task_index=args.pickup_task, approach_weight=args.pickup_approach_weight,
+                                    lift_weight=args.pickup_lift_weight, recovery_weight=args.pickup_recovery_weight)
     if args.episode_ranges:
         episodes = [e for r in args.episode_ranges.split(",") for e in range(*map(int, r.split(":")))]
     lr_schedule = {k: v for k, v in dict(warmup_steps=args.warmup_steps, peak_lr=args.peak_lr, decay_steps=args.decay_steps, decay_lr=args.decay_lr).items() if v is not None}
