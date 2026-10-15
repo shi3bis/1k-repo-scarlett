@@ -21,8 +21,9 @@ mkdir -p $OUT
 exec >> $LOG 2>&1
 echo "$(date -u) eval_hf_ckpt $REPO@$REV subdir=${SUB:-<root>} task=$TASK instances=$INST max_steps=$MAXS config=$CONFIG"
 
-# one sim eval at a time ([x] patterns so pgrep never matches this script's own command line)
-while pgrep -f "[r]un_custom_eval.py" >/dev/null || pgrep -f "[s]erve_indep.py" >/dev/null; do
+# one sim eval at a time. Patterns are anchored to the real eval/server command lines (2026-10-11): a plain
+# "[r]un_custom_eval.py" match also hit idle launcher shells whose command text merely mentioned the file name.
+while pgrep -f "^python -u scripts/[r]un_custom_eval[.]py" >/dev/null || pgrep -f "^(uv run --no-sync python|/home/kasm-user/venvs/p4t/bin/python) [^ ]*[s]erve_indep[.]py --port" >/dev/null; do
   echo "$(date -u) another eval/server is running -- waiting"; sleep 120
 done
 
