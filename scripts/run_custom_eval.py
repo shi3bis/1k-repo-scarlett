@@ -1804,6 +1804,36 @@ def main():
                 return None
             return float(_dn.degrees(_dn.arctan2(-(ys.mean() - 120.0), xs.mean() - 95.0)) % 360.0), int(len(xs))
 
+        # SQUARE-UP (2026-10-16, user: "start with the dot at absolute pi and try micro-angles / tiny moves at the height").
+        # Pose-log analysis (diag/t63_tilt.py, train 1-10 + public): on arrival the detector sat 2-5 cm from the nail with
+        # roll (about the wall normal) mostly within 10 deg but PITCH/YAW 5-25 deg off, and the roll-only sweep then tilted
+        # it to 50-150 deg. Mounted, the detector's top face (its local up, which faces up while it lies on the table) must
+        # point straight back out of the wall = -forward. B1K_WALL_SQUARE=1: at the close (detector still on the table) the
+        # hand's orientation is stored, giving the detector's up axis in the hand frame; after the lift the hand turns
+        # (<= B1K_WALL_SQ_RATE deg/step, max 150 steps) until that axis points along -forward (minimal rotation = pitch/yaw
+        # only, roll left to DOT-ALIGN), and every later sweep phase keeps it there (pitch/yaw servo, roll untouched).
+        # Robot state only (arm kinematics + base heading). Logs "SQUARE-UP".
+        _wsqOn = os.environ.get("B1K_WALL_SQUARE", "0") == "1"
+        _wsqRate = float(os.environ.get("B1K_WALL_SQ_RATE", "2"))
+        _wsqKeep = float(os.environ.get("B1K_WALL_SQ_KEEP", "0.3"))
+
+        def _sq_err(robot, arm, s):
+            # rotation vector (world) that takes the detector's up axis onto -forward, and its angle
+            Re = _w_t(T.quat2mat(_w_t(robot.get_eef_orientation(arm=arm))))
+            u = Re @ s["sq_d"]; tg = -s["f"]
+            ax = th.linalg.cross(u, tg); sn = float(th.linalg.norm(ax)); cs = float(u @ tg)
+            ang = _wm.atan2(sn, cs)
+            return (ax / max(sn, 1e-6)) * ang, ang
+
+        def _sq_keep(robot, arm, s):
+            if not s.get("sq_d_on"):
+                return th.zeros(3)
+            v, _ = _sq_err(robot, arm, s)
+            v = v - (v @ s["f"]) * s["f"]          # leave the roll about the wall normal to the sweep
+            v = _wsqKeep * v
+            n = float(th.linalg.norm(v)); cap = _wm.radians(1.0)
+            return v * (cap / n) if n > cap else v
+
         _wtLatAfter = float(os.environ.get("B1K_WALL_LAT_AFTER", "-1"))
         if _wtLat and _wtLatAfter >= 0:
             _sm = [(g, 0.0) for g in _wtAng if abs(g) <= _wtLatAfter]
@@ -1875,6 +1905,11 @@ def main():
         _gdDepth = float(os.environ.get("B1K_GD_DEPTH", "0.03"))
         _gdClose = int(os.environ.get("B1K_GD_CLOSE", "25"))
         _gdCool = int(os.environ.get("B1K_GD_COOL", "60"))
+        # B1K_GD_EDGE=1 (2026-10-16, SQUARE-UP public 305: the R hand held the detector by its wide bottom tier, width read
+        # +1.00 = "open", and the model kept commanding close -> GRASP-DESCEND re-fired 30x every ~120 steps 1291-3826 and
+        # pinned the hand at the table for ~2700 steps; fast-sweep 306 had 15 repeats): only trigger on a NEW close, i.e.
+        # the model's command for that hand must have been open (>= 0) since the last trigger.
+        _gdEdge = os.environ.get("B1K_GD_EDGE", "0") == "1"
 
         # PICK-DOT (2026-10-13, user: "add an align rule when picking up so the range of motion is not limited"): with
         # B1K_GD_DOT=1, before the GRASP-DESCEND lowering, spin the LEFT gripper about the vertical (hand held in place,
@@ -1928,8 +1963,12 @@ def main():
                 ep = _w_t(robot.get_eef_position(arm=arm))
                 hz = float((Rb.T @ (ep - bpos))[2])
                 if d["ph"] is None:
+                    if float(a[g]) >= 0:
+                        d["armed"] = True
                     if (float(a[g]) < 0 and _w_width(robot, arm) > 0.5 and hz < _gdMaxZ
-                            and not s["carry"].get(arm, False) and t - d["cool"] > _gdCool):
+                            and not s["carry"].get(arm, False) and t - d["cool"] > _gdCool
+                            and (not _gdEdge or d.get("armed", True))):
+                        d["armed"] = False
                         jq = _w_t(robot.get_joint_positions())
                         d.update(ph="down", n=0, z0=hz, zl=hz, q=jq[_w_t(robot.arm_control_idx[arm]).long()].clone(),
                                  torso=jq[_w_t(robot.trunk_control_idx).long()].clone(), p0=Rb.T @ (ep - bpos))
@@ -2170,6 +2209,10 @@ def main():
                     hz_now = float((Rb.T @ (_w_t(robot.get_eef_position(arm=arm)) - bpos))[2])
                     if s["held"][arm] == 1:
                         s["z_close"][arm] = hz_now; s["carry"][arm] = False; s["bh"][arm] = 0
+                        if _wsqOn:
+                            # detector still flat on the table: its up axis (world z) in this hand's frame
+                            Rc = _w_t(T.quat2mat(_w_t(robot.get_eef_orientation(arm=arm))))
+                            s.setdefault("sq_dh", {})[arm] = Rc.T @ th.tensor([0.0, 0.0, 1.0])
                     elif s["held"][arm] == 0:
                         s["carry"][arm] = False
                     elif hz_now >= s["z_close"].get(arm, 9.0) + 0.15 and not s["carry"].get(arm, False):
@@ -2213,6 +2256,13 @@ def main():
                         sv = th.stack([-f[1], f[0], th.zeros(())]); sv = sv / th.clamp(th.linalg.norm(sv), min=1e-6)
                         s.update(mode="twist", phase="back", k=0, n=0, f=f, col=col, r0=_w_roll(robot, arm, f, col),
                                  anchor=a0.clone(), a0=a0, sv=sv, pairs=list(_wtPairs))
+                        if _wsqOn and arm in s.get("sq_dh", {}):
+                            s.update(phase="square", sq_d=s["sq_dh"][arm], sq_d_on=False, sq_l=9.0)
+                            _, a_ = _sq_err(robot, arm, s)
+                            print(f"SQUARE-UP: {arm} detector face {_wm.degrees(a_):.1f} deg off the wall normal at step {t} "
+                                  f"-> squaring pitch/yaw first", flush=True)
+                        elif _wsqOn:
+                            print(f"SQUARE-UP: no grasp-time hand orientation for {arm} -> skipped", flush=True)
                         if _wtDot:
                             try:
                                 dn = _w_dot(self, arm)
@@ -2276,11 +2326,32 @@ def main():
                     # v5 (07:50, WALLTWIST4: the hand drifted ~1 m back from the wall over 12 cycles): drive the hand to
                     # anchor + off along the wall normal (all three axes, P-control, <= 3 mm/step), so no cycle can drift
                     return th.clamp(0.5 * (s["anchor"] + off * fw - ep), -0.003, 0.003)
+                if ph == "square":
+                    v, ang = _sq_err(robot, arm, s)
+                    rate = _wm.radians(_wsqRate)
+                    om = v * min(1.0, rate / max(ang, 1e-6))
+                    s["q"] = _w_ik(robot, arm, s["q"], Rb, _goto(-0.02), om)
+                    if s["n"] % 20 == 0:
+                        stall = ang > s["sq_l"] - _wm.radians(0.5); s["sq_l"] = ang
+                    else:
+                        stall = False
+                    if ang < _wm.radians(1.5) or s["n"] >= 150 or (stall and s["n"] >= 40):
+                        s["sq_d_on"] = True
+                        s["col"] = int(th.argmin(th.abs(_w_t(T.quat2mat(_w_t(robot.get_eef_orientation(arm=arm)))).T @ fw)))
+                        s["r0"] = _w_roll(robot, arm, fw, s["col"]); s["ru"] = 0.0; s.pop("rp", None)
+                        print(f"SQUARE-UP: done at step {t} after {s['n']} steps, face {_wm.degrees(ang):.1f} deg off"
+                              f"{' (stalled)' if stall else ''} -> sweep ({len(s['pairs'])} tries, first "
+                              f"{[round(p[0]) for p in s['pairs'][:5]]})", flush=True)
+                        s["phase"] = "back"; s["n"] = 0
+                        s["q"] = _w_t(robot.get_joint_positions())[_w_t(robot.arm_control_idx[arm]).long()].clone()
+                    _w_set(a, sl, s["q"])
+                    return
+                kp = _sq_keep(robot, arm, s) if _wsqOn else zero
                 if ph == "back":
                     if _wtFast:
-                        s["q"] = _w_ik(robot, arm, s["q"], Rb, _goto(-_wtLatBack if s["pairs"][s["k"]][1] != 0.0 else -0.02), zero)
+                        s["q"] = _w_ik(robot, arm, s["q"], Rb, _goto(-_wtLatBack if s["pairs"][s["k"]][1] != 0.0 else -0.02), kp)
                     else:
-                        s["q"] = _w_ik(robot, arm, s["q"], Rb, -vb * fw + hold, zero)
+                        s["q"] = _w_ik(robot, arm, s["q"], Rb, -vb * fw + hold, kp)
                     if s["n"] >= (nb if s["pairs"][s["k"]][1] == 0.0 else 30):
                         s["phase"] = "turn"; s["n"] = 0
                 elif ph == "turn":
@@ -2291,7 +2362,7 @@ def main():
                     err = _wm.radians(s["pairs"][s["k"]][0]) - s["ru"]
                     rate = _wm.radians(_wtTurn if _wtFast else 1)
                     wv = max(-rate, min(rate, err))
-                    s["q"] = _w_ik(robot, arm, s["q"], Rb, _goto(-0.02) if _wtFast else hold, wv * fw)
+                    s["q"] = _w_ik(robot, arm, s["q"], Rb, _goto(-0.02) if _wtFast else hold, wv * fw + kp)
                     if _wtFast and s["n"] % 20 == 0:
                         stalled = abs(err) > abs(s.get("err20", 9.0)) - _wm.radians(2)
                         s["err20"] = err
@@ -2303,7 +2374,7 @@ def main():
                                   f"(joint limit / stall) at step {t}", flush=True)
                         s["phase"] = "press"; s["n"] = 0; s["p0"] = ep.clone(); s["pl"] = ep.clone(); s["err20"] = 9.0
                 elif ph == "press":
-                    s["q"] = _w_ik(robot, arm, s["q"], Rb, (_goto(_wtPress) if _wtFast else vp * fw + hold), zero)
+                    s["q"] = _w_ik(robot, arm, s["q"], Rb, (_goto(_wtPress) if _wtFast else vp * fw + hold), kp)
                     stop = False
                     if s["n"] % nst == 0:
                         # fast: contact only counts after 10 steps (the arm needs a few steps to get moving)
@@ -2317,18 +2388,18 @@ def main():
                             s["phase"] = "dwell"; s["n"] = 0
                 elif ph == "seat":
                     # keep winding the command into the contact = press the detector onto what it touches
-                    s["q"] = _w_ik(robot, arm, s["q"], Rb, 0.002 * fw + hold, zero)
+                    s["q"] = _w_ik(robot, arm, s["q"], Rb, 0.002 * fw + hold, kp)
                     if s["n"] >= _wtSeat:
                         s["phase"] = "dwell"; s["n"] = 0
                 elif ph == "dwell":
-                    s["q"] = _w_ik(robot, arm, s["q"], Rb, hold, zero)
+                    s["q"] = _w_ik(robot, arm, s["q"], Rb, hold, kp)
                     if s["n"] >= nd:
                         s["phase"] = "pull"; s["n"] = 0; s["p0"] = ep.clone()
                         # 07:00 (WALLTWIST3 false lock at -30 deg): the press winds the joint command up to 3 cm into the
                         # wall; restart the pull from the MEASURED joints so the hand actually moves back
                         s["q"] = _w_t(robot.get_joint_positions())[_w_t(robot.arm_control_idx[arm]).long()].clone()
                 elif ph == "pull":
-                    s["q"] = _w_ik(robot, arm, s["q"], Rb, -vpl * fw + hold, zero)
+                    s["q"] = _w_ik(robot, arm, s["q"], Rb, -vpl * fw + hold, kp)
                     pull_done = s["n"] >= npl
                     if _wtPullBase:
                         a[0] = -0.06
@@ -2475,6 +2546,9 @@ def main():
                 try:
                     rec["eef"] = {arm: [round(float(v), 3) for v in evaluator.robot.get_eef_position(arm=arm)]
                                   for arm in ("left", "right")}
+                    # 2026-10-16: + eef quaternions (xyzw), to tell grip slip from hand tilt (SQUARE-UP diagnosis)
+                    rec["eefq"] = {arm: [round(float(v), 4) for v in evaluator.robot.get_eef_orientation(arm=arm)]
+                                   for arm in ("left", "right")}
                 except Exception:
                     pass
                 if with_objs or t % obj_every == 0:

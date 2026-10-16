@@ -1,0 +1,26 @@
+{
+  "task": "installing_smoke_detectors",
+  "task_id": 63,
+  "instance_id": 304,
+  "steps": 5138,
+  "success": false,
+  "video": "/workspace/persistent/eval_outputs/joint356378_pickup27500_task63_square_public/videos/installing_smoke_detectors_304_0.mp4",
+  "agent_distance": {
+    "base": 8.77659443432259,
+    "left": 20.158741073692113,
+    "right": 17.343407097810996
+  },
+  "normalized_agent_distance": {
+    "base": 0.980801843404811,
+    "left": 0.3368365105329646,
+    "right": 0.18722388177175603
+  },
+  "q_score": {
+    "final": 0.0
+  },
+  "time": {
+    "simulator_steps": 5138,
+    "simulator_time": 171.26666666666665,
+    "normalized_time": 0.4999552355001946
+  }
+}
